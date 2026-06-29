@@ -19,7 +19,7 @@
  */
 
 import { handleHome, handleDownloaderScript, handleProxy } from './handlers.js';
-import { validateBrowserAccess } from './utils.js';
+import { validateBrowserAccess, isBrowserRequest, isAllowedBrowserPath } from './utils.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -27,26 +27,64 @@ export default {
         const hostname = url.hostname;
         const pathname = url.pathname;
 
-        // 访问权限检查
         const restrictBrowserAccess = env.RESTRICT_BROWSER_ACCESS === 'true';
-        const accessCheck = validateBrowserAccess(request, pathname, restrictBrowserAccess, env.ACCESS_TOKEN);
-        if (accessCheck) {
-            return accessCheck;
+        const accessToken = env.ACCESS_TOKEN;
+
+        // 处理登录表单 POST（浏览器提交 Token）
+        if (restrictBrowserAccess && accessToken && request.method === 'POST' && !isAllowedBrowserPath(pathname)) {
+            const formData = await request.formData();
+            const submittedToken = formData.get('token');
+            url.searchParams.delete('error');
+
+            if (submittedToken === accessToken) {
+                return new Response(null, {
+                    status: 302,
+                    headers: {
+                        'Location': url.toString(),
+                        'Set-Cookie': `hf_token=${accessToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`
+                    }
+                });
+            }
+            // Token 错误，重定向回登录页
+            url.searchParams.set('error', '1');
+            return Response.redirect(url.toString(), 302);
+        }
+
+        // 访问权限检查
+        const { blocked, setCookie } = validateBrowserAccess(request, pathname, restrictBrowserAccess, accessToken);
+        if (blocked) {
+            return blocked;
         }
 
         // 路由分发
+        let response;
         switch (true) {
             // 首页
             case pathname === '/' || pathname === '':
-                return handleHome(hostname);
+                response = handleHome(hostname);
+                break;
 
             // 下载器脚本
             case pathname === '/hf_downloader.py':
-                return handleDownloaderScript(hostname);
+                response = handleDownloaderScript(hostname);
+                break;
 
             // 代理请求
             default:
-                return handleProxy(request, url);
+                response = await handleProxy(request, url);
         }
+
+        // 首次 Token 验证通过后，设置 Cookie
+        if (setCookie) {
+            const newHeaders = new Headers(response.headers);
+            newHeaders.set('Set-Cookie', setCookie);
+            response = new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: newHeaders
+            });
+        }
+
+        return response;
     }
 };

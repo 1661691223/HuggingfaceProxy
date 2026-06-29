@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-29T09:17:56.890Z
+ * 构建时间: 2026-06-29T09:23:14.030Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -14,6 +14,60 @@ var ALLOWED_UPSTREAM_DOMAINS = [
 ];
 var DEFAULT_UPSTREAM = "huggingface.co";
 var REDIRECT_PREFIX = "redirect_to_";
+
+// src/templates/login.html
+var login_default = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>\u8BBF\u95EE\u9A8C\u8BC1</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f5f5;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh;
+  }
+  .card {
+    background: #fff; border-radius: 12px; padding: 40px;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.08); max-width: 420px; width: 100%;
+  }
+  .card h1 { font-size: 20px; margin-bottom: 8px; color: #1a1a1a; }
+  .card p { font-size: 14px; color: #666; margin-bottom: 24px; }
+  .card input {
+    width: 100%; padding: 12px 16px; border: 1px solid #ddd;
+    border-radius: 8px; font-size: 14px; margin-bottom: 16px;
+  }
+  .card input:focus { outline: none; border-color: #ff9d2e; box-shadow: 0 0 0 3px rgba(255,157,46,0.15); }
+  .card button {
+    width: 100%; padding: 12px; background: #ff9d2e; color: #fff;
+    border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
+    cursor: pointer; transition: background 0.2s;
+  }
+  .card button:hover { background: #e88b1a; }
+  .error { color: #e53e3e; font-size: 13px; margin-bottom: 12px; display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>\u{1F510} HuggingFace Proxy</h1>
+  <p>\u8BF7\u8F93\u5165\u8BBF\u95EE Token \u4EE5\u7EE7\u7EED</p>
+  <div class="error" id="error">Token \u4E0D\u6B63\u786E\uFF0C\u8BF7\u91CD\u8BD5</div>
+  <form method="post">
+    <input type="password" name="token" placeholder="Access Token" autofocus>
+    <button type="submit">\u9A8C\u8BC1</button>
+  </form>
+</div>
+<script>
+  if (window.location.search.includes('error=1')) {
+    document.getElementById('error').style.display = 'block';
+  }
+<\/script>
+</body>
+</html>
+`;
 
 // src/utils.js
 function isAllowedUpstream(hostname) {
@@ -114,34 +168,66 @@ function isAllowedBrowserPath(pathname) {
 }
 function validateBrowserAccess(request, pathname, restrictBrowserAccess, accessToken) {
   if (!restrictBrowserAccess) {
-    return null;
+    return { blocked: null, setCookie: null };
   }
   if (isAllowedBrowserPath(pathname)) {
-    return null;
+    return { blocked: null, setCookie: null };
   }
   if (accessToken) {
+    const cookieHeader = request.headers.get("Cookie") || "";
+    const cookieToken = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("hf_token="))?.slice(9);
+    if (cookieToken === accessToken) {
+      return { blocked: null, setCookie: null };
+    }
     const url = new URL(request.url);
     const queryToken = url.searchParams.get("token");
     const authHeader = request.headers.get("Authorization");
     const headerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (queryToken === accessToken || headerToken === accessToken) {
-      return null;
+      return {
+        blocked: null,
+        setCookie: `hf_token=${accessToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`
+      };
     }
-    return new Response("Access denied: invalid or missing token", {
-      status: 403,
-      headers: { "Content-Type": "text/plain; charset=utf-8" }
-    });
-  }
-  if (isBrowserRequest(request)) {
-    return new Response(
-      "\u6D4F\u89C8\u5668\u8BBF\u95EE\u53D7\u9650\u3002\u8BF7\u4F7F\u7528 API \u5BA2\u6237\u7AEF\uFF08curl\u3001wget\u3001Python \u7B49\uFF09\u8BBF\u95EE\u6A21\u578B\u6587\u4EF6\u3002\n\n\u5141\u8BB8\u8BBF\u95EE\u7684\u9875\u9762\uFF1A\n  - / (\u9996\u9875)\n  - /hf_downloader.py (\u4E0B\u8F7D\u811A\u672C)",
-      {
+    const browser = isBrowserRequest(request);
+    if (browser && request.method === "POST") {
+      url.searchParams.delete("token");
+      url.searchParams.set("error", "1");
+      return {
+        blocked: Response.redirect(url.toString(), 302),
+        setCookie: null
+      };
+    }
+    if (browser) {
+      return {
+        blocked: new Response(login_default, {
+          status: 401,
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        }),
+        setCookie: null
+      };
+    }
+    return {
+      blocked: new Response("Access denied: invalid or missing token", {
         status: 403,
         headers: { "Content-Type": "text/plain; charset=utf-8" }
-      }
-    );
+      }),
+      setCookie: null
+    };
   }
-  return null;
+  if (isBrowserRequest(request)) {
+    return {
+      blocked: new Response(
+        "\u6D4F\u89C8\u5668\u8BBF\u95EE\u53D7\u9650\u3002\u8BF7\u4F7F\u7528 API \u5BA2\u6237\u7AEF\uFF08curl\u3001wget\u3001Python \u7B49\uFF09\u8BBF\u95EE\u6A21\u578B\u6587\u4EF6\u3002\n\n\u5141\u8BB8\u8BBF\u95EE\u7684\u9875\u9762\uFF1A\n  - / (\u9996\u9875)\n  - /hf_downloader.py (\u4E0B\u8F7D\u811A\u672C)",
+        {
+          status: 403,
+          headers: { "Content-Type": "text/plain; charset=utf-8" }
+        }
+      ),
+      setCookie: null
+    };
+  }
+  return { blocked: null, setCookie: null };
 }
 
 // src/templates/home.html
@@ -904,21 +990,51 @@ var index_default = {
     const hostname = url.hostname;
     const pathname = url.pathname;
     const restrictBrowserAccess = env.RESTRICT_BROWSER_ACCESS === "true";
-    const accessCheck = validateBrowserAccess(request, pathname, restrictBrowserAccess, env.ACCESS_TOKEN);
-    if (accessCheck) {
-      return accessCheck;
+    const accessToken = env.ACCESS_TOKEN;
+    if (restrictBrowserAccess && accessToken && request.method === "POST" && !isAllowedBrowserPath(pathname)) {
+      const formData = await request.formData();
+      const submittedToken = formData.get("token");
+      url.searchParams.delete("error");
+      if (submittedToken === accessToken) {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            "Location": url.toString(),
+            "Set-Cookie": `hf_token=${accessToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`
+          }
+        });
+      }
+      url.searchParams.set("error", "1");
+      return Response.redirect(url.toString(), 302);
     }
+    const { blocked, setCookie } = validateBrowserAccess(request, pathname, restrictBrowserAccess, accessToken);
+    if (blocked) {
+      return blocked;
+    }
+    let response;
     switch (true) {
       // 首页
       case (pathname === "/" || pathname === ""):
-        return handleHome(hostname);
+        response = handleHome(hostname);
+        break;
       // 下载器脚本
       case pathname === "/hf_downloader.py":
-        return handleDownloaderScript(hostname);
+        response = handleDownloaderScript(hostname);
+        break;
       // 代理请求
       default:
-        return handleProxy(request, url);
+        response = await handleProxy(request, url);
     }
+    if (setCookie) {
+      const newHeaders = new Headers(response.headers);
+      newHeaders.set("Set-Cookie", setCookie);
+      response = new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: newHeaders
+      });
+    }
+    return response;
   }
 };
 export {
