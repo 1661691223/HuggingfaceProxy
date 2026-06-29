@@ -122,18 +122,50 @@ export function isAllowedBrowserPath(pathname) {
 }
 
 /**
- * 验证浏览器访问权限
+ * 验证访问权限
+ *
+ * 规则：
+ *  - / 和 /hf_downloader.py 始终允许
+ *  - RESTRICT_BROWSER_ACCESS 不为 "true" 时，不做任何限制
+ *  - RESTRICT_BROWSER_ACCESS 为 "true" 时：
+ *    - 如果设置了 ACCESS_TOKEN，所有客户端需提供 Token
+ *    - 如果未设置 ACCESS_TOKEN，仅限制浏览器访问
+ *
  * @param {Request} request - 请求对象
  * @param {string} pathname - 请求路径
- * @param {boolean} restrictBrowserAccess - 是否启用浏览器访问限制
+ * @param {boolean} restrictBrowserAccess - 是否启用访问限制
+ * @param {string} accessToken - 访问 Token，为空则不校验
  * @returns {Response | null} - 如果验证失败返回错误响应，否则返回 null
  */
-export function validateBrowserAccess(request, pathname, restrictBrowserAccess) {
+export function validateBrowserAccess(request, pathname, restrictBrowserAccess, accessToken) {
     if (!restrictBrowserAccess) {
         return null;
     }
 
-    if (isBrowserRequest(request) && !isAllowedBrowserPath(pathname)) {
+    // 首页和下载器脚本始终允许
+    if (isAllowedBrowserPath(pathname)) {
+        return null;
+    }
+
+    // 如果设置了 ACCESS_TOKEN，走 Token 校验（所有客户端均需提供）
+    if (accessToken) {
+        const url = new URL(request.url);
+        const queryToken = url.searchParams.get('token');
+        const authHeader = request.headers.get('Authorization');
+        const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+        if (queryToken === accessToken || headerToken === accessToken) {
+            return null;
+        }
+
+        return new Response('Access denied: invalid or missing token', {
+            status: 403,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        });
+    }
+
+    // 未设置 Token，走浏览器 UA 检查
+    if (isBrowserRequest(request)) {
         return new Response(
             '浏览器访问受限。请使用 API 客户端（curl、wget、Python 等）访问模型文件。\n\n' +
             '允许访问的页面：\n' +

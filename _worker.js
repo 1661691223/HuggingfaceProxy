@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-04-20T14:41:10.285Z
+ * 构建时间: 2026-06-29T09:17:56.890Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -112,11 +112,27 @@ function isAllowedBrowserPath(pathname) {
   const allowedPaths = ["/", "", "/hf_downloader.py"];
   return allowedPaths.includes(pathname);
 }
-function validateBrowserAccess(request, pathname, restrictBrowserAccess) {
+function validateBrowserAccess(request, pathname, restrictBrowserAccess, accessToken) {
   if (!restrictBrowserAccess) {
     return null;
   }
-  if (isBrowserRequest(request) && !isAllowedBrowserPath(pathname)) {
+  if (isAllowedBrowserPath(pathname)) {
+    return null;
+  }
+  if (accessToken) {
+    const url = new URL(request.url);
+    const queryToken = url.searchParams.get("token");
+    const authHeader = request.headers.get("Authorization");
+    const headerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (queryToken === accessToken || headerToken === accessToken) {
+      return null;
+    }
+    return new Response("Access denied: invalid or missing token", {
+      status: 403,
+      headers: { "Content-Type": "text/plain; charset=utf-8" }
+    });
+  }
+  if (isBrowserRequest(request)) {
     return new Response(
       "\u6D4F\u89C8\u5668\u8BBF\u95EE\u53D7\u9650\u3002\u8BF7\u4F7F\u7528 API \u5BA2\u6237\u7AEF\uFF08curl\u3001wget\u3001Python \u7B49\uFF09\u8BBF\u95EE\u6A21\u578B\u6587\u4EF6\u3002\n\n\u5141\u8BB8\u8BBF\u95EE\u7684\u9875\u9762\uFF1A\n  - / (\u9996\u9875)\n  - /hf_downloader.py (\u4E0B\u8F7D\u811A\u672C)",
       {
@@ -888,7 +904,7 @@ var index_default = {
     const hostname = url.hostname;
     const pathname = url.pathname;
     const restrictBrowserAccess = env.RESTRICT_BROWSER_ACCESS === "true";
-    const accessCheck = validateBrowserAccess(request, pathname, restrictBrowserAccess);
+    const accessCheck = validateBrowserAccess(request, pathname, restrictBrowserAccess, env.ACCESS_TOKEN);
     if (accessCheck) {
       return accessCheck;
     }

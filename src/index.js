@@ -10,9 +10,12 @@
  * - 如果目标是其他允许的域名 → 添加 /redirect_to_{domain} 前缀
  *
  * 环境变量：
- * - RESTRICT_BROWSER_ACCESS: 限制浏览器访问 (true/false)
- *   - true: 浏览器只能访问首页和脚本下载页面
+ * - RESTRICT_BROWSER_ACCESS: 启用访问限制 (true/false)
+ *   - true: / 和 /hf_downloader.py 以外需要授权
  *   - false 或未设置: 不限制
+ * - ACCESS_TOKEN: 访问 Token（可选）
+ *   - 设置后所有客户端需通过 ?token=xxx 或 Authorization: Bearer xxx 提供
+ *   - 仅在 RESTRICT_BROWSER_ACCESS=true 时生效
  */
 
 import { handleHome, handleDownloaderScript, handleProxy } from './handlers.js';
@@ -24,9 +27,9 @@ export default {
         const hostname = url.hostname;
         const pathname = url.pathname;
 
-        // 浏览器访问限制检查
+        // 访问权限检查
         const restrictBrowserAccess = env.RESTRICT_BROWSER_ACCESS === 'true';
-        const accessCheck = validateBrowserAccess(request, pathname, restrictBrowserAccess);
+        const accessCheck = validateBrowserAccess(request, pathname, restrictBrowserAccess, env.ACCESS_TOKEN);
         if (accessCheck) {
             return accessCheck;
         }
