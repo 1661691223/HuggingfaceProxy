@@ -6,9 +6,9 @@
   "scripts": {
     "build": "node build.js",
     "dev": "npm run build && wrangler pages dev .",
-    "dev:worker": "npm run build && wrangler dev --config wrangler.worker.toml",
+    "dev:worker": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler pages deploy .",
-    "deploy:worker": "npm run build && wrangler deploy --config wrangler.worker.toml"
+    "deploy:worker": "npm run build && wrangler deploy"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",
