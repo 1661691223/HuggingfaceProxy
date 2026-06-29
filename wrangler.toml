@@ -1,7 +1,6 @@
 name = "hf-proxy"
 main = "_worker.js"
 compatibility_date = "2025-01-01"
-pages_build_output_dir = "."
 
 # 环境变量请在 Cloudflare Dashboard 中设置
 # Workers → drroxy → Settings → Variables
