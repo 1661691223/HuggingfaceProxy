@@ -32,16 +32,14 @@ hf_proxy/
 
 ## 🚀 快速开始
 
-### 部署到 Cloudflare Pages
+### 部署到 Cloudflare Workers
 
 1. Fork 本仓库
-2. 在 Cloudflare Dashboard 创建 Pages 项目，连接 GitHub 仓库
+2. 在 Cloudflare Dashboard 创建 Workers 项目，连接 GitHub 仓库（Build command: `npm run build`，Deploy command: `npx wrangler deploy`）
 3. 推送代码到 `main` 分支，GitHub Actions 会自动构建 `_worker.js`
-4. Cloudflare Pages 自动拉取最新代码并部署
+4. Cloudflare Workers Builds 自动拉取最新代码并部署
 
-部署完成后，Cloudflare 会自动分配一个 `*.pages.dev` 域名，也可以在项目设置中绑定自定义域名。
-
-> **注意**: `_worker.js` 已添加到 `.gitignore`，仅由 GitHub Actions 构建并强制提交。
+部署完成后，Cloudflare 会自动分配一个 `*.workers.dev` 域名，也可以在项目设置中绑定自定义域名。
 
 ### 本地开发
 
@@ -159,7 +157,7 @@ tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
 
 ### 环境变量
 
-在 Cloudflare Pages 设置中可以配置以下环境变量：
+在 Cloudflare Workers 设置中可以配置以下环境变量：
 
 | 变量名 | 说明 | 可选值 |
 |--------|------|--------|
@@ -187,4 +185,4 @@ export const REDIRECT_PREFIX = 'redirect_to_';
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AinzRimuru/HuggingfaceProxy&type=date&legend=top-left)](https://www.star-history.com/#AinzRimuru/HuggingfaceProxy&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=1661691223/HuggingfaceProxy&type=date&legend=top-left)](https://www.star-history.com/#1661691223/HuggingfaceProxy&type=date&legend=top-left)
