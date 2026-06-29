@@ -1,7 +1,6 @@
-name = "hf-proxy"
+name = "hfproxy"
 main = "_worker.js"
 compatibility_date = "2025-01-01"
 
-# 环境变量请在 Cloudflare Dashboard 中设置
-# Workers → drroxy → Settings → Variables
-# RESTRICT_BROWSER_ACCESS = "true"  # 设为 "true" 限制浏览器访问，不设则默认不限制
+[vars]
+RESTRICT_BROWSER_ACCESS = "true"

@@ -100,9 +100,8 @@ def get_hf_hub_cache() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
-def resolve_commit_sha(session, base_url: str, api_prefix: str, revision: str) -> str:
+def resolve_commit_sha(session, url: str) -> str:
     """通过 API 获取 revision 对应的 commit SHA"""
-    url = f"{base_url}{api_prefix}/revision/{revision}"
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
@@ -197,7 +196,8 @@ class HFDownloader:
         output_dir: Optional[str] = None,
         proxy_domain: str = PROXY_DOMAIN,
         workers: int = DEFAULT_WORKERS,
-        token: Optional[str] = None
+        token: Optional[str] = None,
+        proxy_token: Optional[str] = None
     ):
         self.repo_id = repo_id
         self.repo_type = repo_type
@@ -205,7 +205,8 @@ class HFDownloader:
         self.proxy_domain = proxy_domain
         self.workers = workers
         self.token = token or os.environ.get("HF_TOKEN")
-        
+        self.proxy_token = proxy_token or os.environ.get("PROXY_TOKEN")
+
         # 设置输出目录
         if output_dir:
             self.output_dir = Path(output_dir)
@@ -213,12 +214,12 @@ class HFDownloader:
             # 默认使用仓库名作为目录
             safe_name = repo_id.replace("/", "_")
             self.output_dir = Path.cwd() / safe_name
-            
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 构建基础 URL (直接使用代理域名，默认转发到 huggingface.co)
         self.base_url = f"https://{proxy_domain}"
-        
+
         # API 路径前缀
         if repo_type == "dataset":
             self.api_prefix = f"/api/datasets/{repo_id}"
@@ -229,7 +230,7 @@ class HFDownloader:
         else:  # model
             self.api_prefix = f"/api/models/{repo_id}"
             self.download_prefix = f"/{repo_id}/resolve/{revision}"
-        
+
         # Session 配置
         self.session = requests.Session()
         self.session.headers.update({
@@ -237,11 +238,19 @@ class HFDownloader:
         })
         if self.token:
             self.session.headers["Authorization"] = f"Bearer {self.token}"
+
+    def _url(self, path: str) -> str:
+        """构建带代理 Token 的完整 URL"""
+        url = f"{self.base_url}{path}"
+        if self.proxy_token:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}token={self.proxy_token}"
+        return url
     
     def get_file_list(self) -> List[FileInfo]:
         """获取仓库中所有文件的列表"""
-        url = f"{self.base_url}{self.api_prefix}/tree/{self.revision}"
-        
+        url = self._url(f"{self.api_prefix}/tree/{self.revision}")
+
         print(f"📂 正在获取文件列表: {url}")
         
         all_files = []
@@ -255,9 +264,9 @@ class HFDownloader:
         params = {"recursive": "true"} if not path else {}
         
         if path:
-            url = f"{self.base_url}{self.api_prefix}/tree/{self.revision}/{path}"
+            url = self._url(f"{self.api_prefix}/tree/{self.revision}/{path}")
         else:
-            url = f"{self.base_url}{self.api_prefix}/tree/{self.revision}"
+            url = self._url(f"{self.api_prefix}/tree/{self.revision}")
             params["recursive"] = "true"
         
         try:
@@ -274,7 +283,7 @@ class HFDownloader:
                     
                     # 构建下载 URL
                     encoded_path = quote(file_path, safe="/")
-                    download_url = f"{self.base_url}{self.download_prefix}/{encoded_path}"
+                    download_url = self._url(f"{self.download_prefix}/{encoded_path}")
                     
                     files.append(FileInfo(
                         path=file_path,
@@ -451,7 +460,8 @@ def main():
                         help=f"并行下载数 (默认: {DEFAULT_WORKERS})")
     parser.add_argument("--proxy", "-p", default=PROXY_DOMAIN,
                         help=f"代理域名 (默认: {PROXY_DOMAIN})")
-    parser.add_argument("--token", help="Hugging Face Token (也可设置 HF_TOKEN 环境变量)")
+    parser.add_argument("--token", help="HuggingFace Token，用于访问 gated 模型 (也可设置 HF_TOKEN 环境变量)")
+    parser.add_argument("--proxy-token", help="代理访问 Token (也可设置 PROXY_TOKEN 环境变量)")
     parser.add_argument("--list-only", "-l", action="store_true",
                         help="仅列出文件，不下载")
     parser.add_argument("--ipv4", "-4", action="store_true", help="强制使用 IPv4")
@@ -500,7 +510,8 @@ def main():
         output_dir=args.output,
         proxy_domain=args.proxy,
         workers=args.workers,
-        token=args.token
+        token=args.token,
+        proxy_token=args.proxy_token
     )
     
     if args.list_only:
@@ -520,8 +531,8 @@ def main():
         if args.cache and results["failed"] == 0:
             try:
                 commit_sha = resolve_commit_sha(
-                    downloader.session, downloader.base_url,
-                    downloader.api_prefix, downloader.revision
+                    downloader.session,
+                    downloader._url(f"{downloader.api_prefix}/revision/{downloader.revision}")
                 )
                 import_to_cache(
                     downloader.output_dir, args.repo_id, args.type,

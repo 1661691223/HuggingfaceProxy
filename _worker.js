@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-29T09:23:14.030Z
+ * 构建时间: 2026-06-29T10:39:41.092Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -488,9 +488,8 @@ def get_hf_hub_cache() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
-def resolve_commit_sha(session, base_url: str, api_prefix: str, revision: str) -> str:
+def resolve_commit_sha(session, url: str) -> str:
     """\u901A\u8FC7 API \u83B7\u53D6 revision \u5BF9\u5E94\u7684 commit SHA"""
-    url = f"{base_url}{api_prefix}/revision/{revision}"
     try:
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
@@ -585,7 +584,8 @@ class HFDownloader:
         output_dir: Optional[str] = None,
         proxy_domain: str = PROXY_DOMAIN,
         workers: int = DEFAULT_WORKERS,
-        token: Optional[str] = None
+        token: Optional[str] = None,
+        proxy_token: Optional[str] = None
     ):
         self.repo_id = repo_id
         self.repo_type = repo_type
@@ -593,7 +593,8 @@ class HFDownloader:
         self.proxy_domain = proxy_domain
         self.workers = workers
         self.token = token or os.environ.get("HF_TOKEN")
-        
+        self.proxy_token = proxy_token or os.environ.get("PROXY_TOKEN")
+
         # \u8BBE\u7F6E\u8F93\u51FA\u76EE\u5F55
         if output_dir:
             self.output_dir = Path(output_dir)
@@ -601,12 +602,12 @@ class HFDownloader:
             # \u9ED8\u8BA4\u4F7F\u7528\u4ED3\u5E93\u540D\u4F5C\u4E3A\u76EE\u5F55
             safe_name = repo_id.replace("/", "_")
             self.output_dir = Path.cwd() / safe_name
-            
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # \u6784\u5EFA\u57FA\u7840 URL (\u76F4\u63A5\u4F7F\u7528\u4EE3\u7406\u57DF\u540D\uFF0C\u9ED8\u8BA4\u8F6C\u53D1\u5230 huggingface.co)
         self.base_url = f"https://{proxy_domain}"
-        
+
         # API \u8DEF\u5F84\u524D\u7F00
         if repo_type == "dataset":
             self.api_prefix = f"/api/datasets/{repo_id}"
@@ -617,7 +618,7 @@ class HFDownloader:
         else:  # model
             self.api_prefix = f"/api/models/{repo_id}"
             self.download_prefix = f"/{repo_id}/resolve/{revision}"
-        
+
         # Session \u914D\u7F6E
         self.session = requests.Session()
         self.session.headers.update({
@@ -625,11 +626,19 @@ class HFDownloader:
         })
         if self.token:
             self.session.headers["Authorization"] = f"Bearer {self.token}"
+
+    def _url(self, path: str) -> str:
+        """\u6784\u5EFA\u5E26\u4EE3\u7406 Token \u7684\u5B8C\u6574 URL"""
+        url = f"{self.base_url}{path}"
+        if self.proxy_token:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}token={self.proxy_token}"
+        return url
     
     def get_file_list(self) -> List[FileInfo]:
         """\u83B7\u53D6\u4ED3\u5E93\u4E2D\u6240\u6709\u6587\u4EF6\u7684\u5217\u8868"""
-        url = f"{self.base_url}{self.api_prefix}/tree/{self.revision}"
-        
+        url = self._url(f"{self.api_prefix}/tree/{self.revision}")
+
         print(f"\u{1F4C2} \u6B63\u5728\u83B7\u53D6\u6587\u4EF6\u5217\u8868: {url}")
         
         all_files = []
@@ -643,9 +652,9 @@ class HFDownloader:
         params = {"recursive": "true"} if not path else {}
         
         if path:
-            url = f"{self.base_url}{self.api_prefix}/tree/{self.revision}/{path}"
+            url = self._url(f"{self.api_prefix}/tree/{self.revision}/{path}")
         else:
-            url = f"{self.base_url}{self.api_prefix}/tree/{self.revision}"
+            url = self._url(f"{self.api_prefix}/tree/{self.revision}")
             params["recursive"] = "true"
         
         try:
@@ -662,7 +671,7 @@ class HFDownloader:
                     
                     # \u6784\u5EFA\u4E0B\u8F7D URL
                     encoded_path = quote(file_path, safe="/")
-                    download_url = f"{self.base_url}{self.download_prefix}/{encoded_path}"
+                    download_url = self._url(f"{self.download_prefix}/{encoded_path}")
                     
                     files.append(FileInfo(
                         path=file_path,
@@ -839,7 +848,8 @@ def main():
                         help=f"\u5E76\u884C\u4E0B\u8F7D\u6570 (\u9ED8\u8BA4: {DEFAULT_WORKERS})")
     parser.add_argument("--proxy", "-p", default=PROXY_DOMAIN,
                         help=f"\u4EE3\u7406\u57DF\u540D (\u9ED8\u8BA4: {PROXY_DOMAIN})")
-    parser.add_argument("--token", help="Hugging Face Token (\u4E5F\u53EF\u8BBE\u7F6E HF_TOKEN \u73AF\u5883\u53D8\u91CF)")
+    parser.add_argument("--token", help="HuggingFace Token\uFF0C\u7528\u4E8E\u8BBF\u95EE gated \u6A21\u578B (\u4E5F\u53EF\u8BBE\u7F6E HF_TOKEN \u73AF\u5883\u53D8\u91CF)")
+    parser.add_argument("--proxy-token", help="\u4EE3\u7406\u8BBF\u95EE Token (\u4E5F\u53EF\u8BBE\u7F6E PROXY_TOKEN \u73AF\u5883\u53D8\u91CF)")
     parser.add_argument("--list-only", "-l", action="store_true",
                         help="\u4EC5\u5217\u51FA\u6587\u4EF6\uFF0C\u4E0D\u4E0B\u8F7D")
     parser.add_argument("--ipv4", "-4", action="store_true", help="\u5F3A\u5236\u4F7F\u7528 IPv4")
@@ -888,7 +898,8 @@ def main():
         output_dir=args.output,
         proxy_domain=args.proxy,
         workers=args.workers,
-        token=args.token
+        token=args.token,
+        proxy_token=args.proxy_token
     )
     
     if args.list_only:
@@ -908,8 +919,8 @@ def main():
         if args.cache and results["failed"] == 0:
             try:
                 commit_sha = resolve_commit_sha(
-                    downloader.session, downloader.base_url,
-                    downloader.api_prefix, downloader.revision
+                    downloader.session,
+                    downloader._url(f"{downloader.api_prefix}/revision/{downloader.revision}")
                 )
                 import_to_cache(
                     downloader.output_dir, args.repo_id, args.type,
