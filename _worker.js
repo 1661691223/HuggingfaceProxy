@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-29T10:39:41.092Z
+ * 构建时间: 2026-06-30T08:20:05.805Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -471,8 +471,9 @@ class FileInfo:
     """\u6587\u4EF6\u4FE1\u606F"""
     path: str           # \u76F8\u5BF9\u8DEF\u5F84
     size: int           # \u6587\u4EF6\u5927\u5C0F (bytes)
-    oid: str            # \u6587\u4EF6 OID (\u7528\u4E8E LFS)
+    oid: str            # \u6587\u4EF6 OID
     lfs: bool           # \u662F\u5426\u662F LFS \u6587\u4EF6
+    lfs_sha256: str     # LFS \u6587\u4EF6 SHA256 (\u7528\u4E8E\u5B8C\u6574\u6027\u6821\u9A8C)
     download_url: str   # \u4E0B\u8F7D\u5730\u5740
 
 
@@ -673,11 +674,14 @@ class HFDownloader:
                     encoded_path = quote(file_path, safe="/")
                     download_url = self._url(f"{self.download_prefix}/{encoded_path}")
                     
+                    lfs_sha256 = item.get("lfs", {}).get("oid", "") if lfs else ""
+
                     files.append(FileInfo(
                         path=file_path,
                         size=size,
                         oid=oid,
                         lfs=lfs,
+                        lfs_sha256=lfs_sha256,
                         download_url=download_url
                     ))
                     
@@ -690,11 +694,17 @@ class HFDownloader:
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # \u68C0\u67E5\u662F\u5426\u5DF2\u5B58\u5728\u4E14\u5927\u5C0F\u76F8\u540C
+        # \u68C0\u67E5\u662F\u5426\u5DF2\u5B58\u5728\uFF1A\u5927\u5C0F\u5339\u914D + LFS \u6587\u4EF6\u6821\u9A8C SHA256
         if output_path.exists() and output_path.stat().st_size == file_info.size:
-            if progress_bar:
-                progress_bar.update(file_info.size)
-            return True
+            if file_info.lfs and file_info.lfs_sha256:
+                if compute_sha256(output_path) == file_info.lfs_sha256:
+                    if progress_bar:
+                        progress_bar.update(file_info.size)
+                    return True
+            else:
+                if progress_bar:
+                    progress_bar.update(file_info.size)
+                return True
         
         # \u652F\u6301\u65AD\u70B9\u7EED\u4F20
         resume_pos = 0
@@ -734,7 +744,14 @@ class HFDownloader:
                             f.write(chunk)
                             if progress_bar:
                                 progress_bar.update(len(chunk))
-                
+
+                # \u6821\u9A8C LFS \u6587\u4EF6 SHA256
+                if file_info.lfs and file_info.lfs_sha256:
+                    actual = compute_sha256(output_path)
+                    if actual != file_info.lfs_sha256:
+                        output_path.unlink()
+                        raise ValueError(f"SHA256 mismatch: expected {file_info.lfs_sha256[:12]}..., got {actual[:12]}...")
+
                 return True
                 
             except Exception as e:

@@ -83,8 +83,9 @@ class FileInfo:
     """文件信息"""
     path: str           # 相对路径
     size: int           # 文件大小 (bytes)
-    oid: str            # 文件 OID (用于 LFS)
+    oid: str            # 文件 OID
     lfs: bool           # 是否是 LFS 文件
+    lfs_sha256: str     # LFS 文件 SHA256 (用于完整性校验)
     download_url: str   # 下载地址
 
 
@@ -285,11 +286,14 @@ class HFDownloader:
                     encoded_path = quote(file_path, safe="/")
                     download_url = self._url(f"{self.download_prefix}/{encoded_path}")
                     
+                    lfs_sha256 = item.get("lfs", {}).get("oid", "") if lfs else ""
+
                     files.append(FileInfo(
                         path=file_path,
                         size=size,
                         oid=oid,
                         lfs=lfs,
+                        lfs_sha256=lfs_sha256,
                         download_url=download_url
                     ))
                     
@@ -302,11 +306,17 @@ class HFDownloader:
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 检查是否已存在且大小相同
+        # 检查是否已存在：大小匹配 + LFS 文件校验 SHA256
         if output_path.exists() and output_path.stat().st_size == file_info.size:
-            if progress_bar:
-                progress_bar.update(file_info.size)
-            return True
+            if file_info.lfs and file_info.lfs_sha256:
+                if compute_sha256(output_path) == file_info.lfs_sha256:
+                    if progress_bar:
+                        progress_bar.update(file_info.size)
+                    return True
+            else:
+                if progress_bar:
+                    progress_bar.update(file_info.size)
+                return True
         
         # 支持断点续传
         resume_pos = 0
@@ -346,7 +356,14 @@ class HFDownloader:
                             f.write(chunk)
                             if progress_bar:
                                 progress_bar.update(len(chunk))
-                
+
+                # 校验 LFS 文件 SHA256
+                if file_info.lfs and file_info.lfs_sha256:
+                    actual = compute_sha256(output_path)
+                    if actual != file_info.lfs_sha256:
+                        output_path.unlink()
+                        raise ValueError(f"SHA256 mismatch: expected {file_info.lfs_sha256[:12]}..., got {actual[:12]}...")
+
                 return True
                 
             except Exception as e:
