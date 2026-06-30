@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-30T08:48:06.832Z
+ * 构建时间: 2026-06-30T08:51:31.517Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -707,30 +707,34 @@ class HFDownloader:
             raise
     
     def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
-        """\u4E0B\u8F7D\u5355\u4E2A\u6587\u4EF6"""
+        """\u4E0B\u8F7D\u5355\u4E2A\u6587\u4EF6\uFF0C\u652F\u6301\u65AD\u70B9\u7EED\u4F20\u548C\u5B8C\u6574\u6027\u6821\u9A8C"""
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # \u68C0\u67E5\u662F\u5426\u5DF2\u5B58\u5728\uFF1A\u5927\u5C0F\u5339\u914D + \u5B8C\u6574\u6027\u6821\u9A8C
+
+        # \u6587\u4EF6\u5DF2\u5B58\u5728\u4E14\u5B8C\u6574 \u2192 \u8DF3\u8FC7
         if output_path.exists() and output_path.stat().st_size == file_info.size:
             if self._verify_integrity(output_path, file_info):
                 if progress_bar:
                     progress_bar.update(file_info.size)
                 return True
-        
-        # \u652F\u6301\u65AD\u70B9\u7EED\u4F20
+            # \u6821\u9A8C\u5931\u8D25\uFF0C\u5220\u9664\u91CD\u65B0\u4E0B\u8F7D
+            output_path.unlink()
+
+        # \u65AD\u70B9\u7EED\u4F20\uFF1A\u8BB0\u5F55\u5DF2\u6709\u5B57\u8282\u6570
         resume_pos = 0
         if output_path.exists():
             resume_pos = output_path.stat().st_size
-            if resume_pos > 0 and progress_bar:
-                progress_bar.update(resume_pos)
-        
+            if resume_pos >= file_info.size:
+                # \u672C\u5730\u6587\u4EF6\u5F02\u5E38\uFF08\u6BD4\u9884\u671F\u5927\uFF09\uFF0C\u5220\u9664\u91CD\u4E0B
+                output_path.unlink()
+                resume_pos = 0
+
         for attempt in range(MAX_RETRIES):
             try:
                 headers = {}
                 if resume_pos > 0:
                     headers["Range"] = f"bytes={resume_pos}-"
-                
+
                 resp = self.session.get(
                     file_info.download_url,
                     headers=headers,
@@ -738,20 +742,27 @@ class HFDownloader:
                     timeout=60,
                     allow_redirects=True
                 )
-                
-                # \u5904\u7406\u91CD\u5B9A\u5411\u540E\u7684\u54CD\u5E94
-                if resp.status_code == 416:  # Range Not Satisfiable - \u6587\u4EF6\u5DF2\u5B8C\u6574
-                    if progress_bar:
-                        progress_bar.update(file_info.size - resume_pos)
-                    return True
-                    
+
+                if resp.status_code == 416:
+                    # Range \u8D8A\u754C\uFF0C\u6587\u4EF6\u53EF\u80FD\u5DF2\u88AB\u8FDC\u7A0B\u4FEE\u6539\uFF0C\u5220\u9664\u91CD\u4E0B
+                    output_path.unlink()
+                    resume_pos = 0
+                    continue
+
                 resp.raise_for_status()
-                
-                # \u786E\u5B9A\u5199\u5165\u6A21\u5F0F
-                mode = "ab" if resume_pos > 0 and resp.status_code == 206 else "wb"
-                if mode == "wb":
-                    resume_pos = 0  # \u91CD\u65B0\u4E0B\u8F7D
-                
+
+                # \u670D\u52A1\u5668\u6B63\u786E\u54CD\u5E94 Range \u2192 \u8FFD\u52A0\u6A21\u5F0F\uFF0C\u8BA1\u5165\u5DF2\u4E0B\u8F7D\u5B57\u8282
+                if resp.status_code == 206:
+                    if progress_bar and resume_pos > 0:
+                        progress_bar.update(resume_pos)
+                    mode = "ab"
+                else:
+                    # \u670D\u52A1\u5668\u4E0D\u652F\u6301 Range \u2192 \u91CD\u65B0\u4E0B\u8F7D
+                    if resume_pos > 0:
+                        output_path.unlink()
+                        resume_pos = 0
+                    mode = "wb"
+
                 with open(output_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
                         if chunk:
@@ -759,19 +770,20 @@ class HFDownloader:
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
-                # \u5B8C\u6574\u6027\u6821\u9A8C (LFS: SHA256, \u666E\u901A\u6587\u4EF6: Git blob SHA1)
+                # \u5B8C\u6574\u6027\u6821\u9A8C
                 if not self._verify_integrity(output_path, file_info):
                     output_path.unlink()
+                    resume_pos = 0
                     raise ValueError(f"\u6821\u9A8C\u5931\u8D25: {file_info.path}")
 
                 return True
-                
+
             except Exception as e:
                 print(f"\\n\u26A0\uFE0F \u4E0B\u8F7D\u5931\u8D25 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
                     import time
-                    time.sleep(2 ** attempt)  # \u6307\u6570\u9000\u907F
-        
+                    time.sleep(2 ** attempt)
+
         return False
 
     def _verify_integrity(self, file_path: Path, file_info: FileInfo) -> bool:

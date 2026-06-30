@@ -319,30 +319,34 @@ class HFDownloader:
             raise
     
     def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
-        """下载单个文件"""
+        """下载单个文件，支持断点续传和完整性校验"""
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 检查是否已存在：大小匹配 + 完整性校验
+
+        # 文件已存在且完整 → 跳过
         if output_path.exists() and output_path.stat().st_size == file_info.size:
             if self._verify_integrity(output_path, file_info):
                 if progress_bar:
                     progress_bar.update(file_info.size)
                 return True
-        
-        # 支持断点续传
+            # 校验失败，删除重新下载
+            output_path.unlink()
+
+        # 断点续传：记录已有字节数
         resume_pos = 0
         if output_path.exists():
             resume_pos = output_path.stat().st_size
-            if resume_pos > 0 and progress_bar:
-                progress_bar.update(resume_pos)
-        
+            if resume_pos >= file_info.size:
+                # 本地文件异常（比预期大），删除重下
+                output_path.unlink()
+                resume_pos = 0
+
         for attempt in range(MAX_RETRIES):
             try:
                 headers = {}
                 if resume_pos > 0:
                     headers["Range"] = f"bytes={resume_pos}-"
-                
+
                 resp = self.session.get(
                     file_info.download_url,
                     headers=headers,
@@ -350,20 +354,27 @@ class HFDownloader:
                     timeout=60,
                     allow_redirects=True
                 )
-                
-                # 处理重定向后的响应
-                if resp.status_code == 416:  # Range Not Satisfiable - 文件已完整
-                    if progress_bar:
-                        progress_bar.update(file_info.size - resume_pos)
-                    return True
-                    
+
+                if resp.status_code == 416:
+                    # Range 越界，文件可能已被远程修改，删除重下
+                    output_path.unlink()
+                    resume_pos = 0
+                    continue
+
                 resp.raise_for_status()
-                
-                # 确定写入模式
-                mode = "ab" if resume_pos > 0 and resp.status_code == 206 else "wb"
-                if mode == "wb":
-                    resume_pos = 0  # 重新下载
-                
+
+                # 服务器正确响应 Range → 追加模式，计入已下载字节
+                if resp.status_code == 206:
+                    if progress_bar and resume_pos > 0:
+                        progress_bar.update(resume_pos)
+                    mode = "ab"
+                else:
+                    # 服务器不支持 Range → 重新下载
+                    if resume_pos > 0:
+                        output_path.unlink()
+                        resume_pos = 0
+                    mode = "wb"
+
                 with open(output_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
                         if chunk:
@@ -371,19 +382,20 @@ class HFDownloader:
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
-                # 完整性校验 (LFS: SHA256, 普通文件: Git blob SHA1)
+                # 完整性校验
                 if not self._verify_integrity(output_path, file_info):
                     output_path.unlink()
+                    resume_pos = 0
                     raise ValueError(f"校验失败: {file_info.path}")
 
                 return True
-                
+
             except Exception as e:
                 print(f"\n⚠️ 下载失败 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
                     import time
-                    time.sleep(2 ** attempt)  # 指数退避
-        
+                    time.sleep(2 ** attempt)
+
         return False
 
     def _verify_integrity(self, file_path: Path, file_info: FileInfo) -> bool:
