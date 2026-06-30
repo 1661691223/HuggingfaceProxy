@@ -320,6 +320,7 @@ class HFDownloader:
     
     def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
         """下载单个文件，支持断点续传和完整性校验"""
+        global _shutdown_requested
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -377,6 +378,8 @@ class HFDownloader:
 
                 with open(output_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                        if _shutdown_requested:
+                            return False
                         if chunk:
                             f.write(chunk)
                             if progress_bar:
@@ -504,7 +507,12 @@ class HFDownloader:
 
 def _on_interrupt(signum, frame):
     global _shutdown_requested
+    if _shutdown_requested:
+        # 第二次 Ctrl+C → 强制退出
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os._exit(1)
     _shutdown_requested = True
+    print("\n⏸️  正在停止... (再次 Ctrl+C 强制退出)")
 
 
 def main():
