@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-30T08:20:05.805Z
+ * 构建时间: 2026-06-30T08:28:07.316Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -506,11 +506,24 @@ def compute_sha256(file_path: Path) -> str:
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
         while True:
-            chunk = f.read(8 * 1024 * 1024)  # 8MB chunks
+            chunk = f.read(8 * 1024 * 1024)
             if not chunk:
                 break
             sha256.update(chunk)
     return sha256.hexdigest()
+
+
+def compute_git_blob_sha1(file_path: Path, size: int) -> str:
+    """\u8BA1\u7B97\u6587\u4EF6\u7684 Git blob SHA1 (\u683C\u5F0F: sha1("blob <size>\\\\0<content>"))"""
+    sha1 = hashlib.sha1()
+    sha1.update(f"blob {size}\\0".encode())
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            sha1.update(chunk)
+    return sha1.hexdigest()
 
 
 def import_to_cache(output_dir: Path, repo_id: str, repo_type: str,
@@ -694,14 +707,9 @@ class HFDownloader:
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # \u68C0\u67E5\u662F\u5426\u5DF2\u5B58\u5728\uFF1A\u5927\u5C0F\u5339\u914D + LFS \u6587\u4EF6\u6821\u9A8C SHA256
+        # \u68C0\u67E5\u662F\u5426\u5DF2\u5B58\u5728\uFF1A\u5927\u5C0F\u5339\u914D + \u5B8C\u6574\u6027\u6821\u9A8C
         if output_path.exists() and output_path.stat().st_size == file_info.size:
-            if file_info.lfs and file_info.lfs_sha256:
-                if compute_sha256(output_path) == file_info.lfs_sha256:
-                    if progress_bar:
-                        progress_bar.update(file_info.size)
-                    return True
-            else:
+            if self._verify_integrity(output_path, file_info):
                 if progress_bar:
                     progress_bar.update(file_info.size)
                 return True
@@ -745,12 +753,10 @@ class HFDownloader:
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
-                # \u6821\u9A8C LFS \u6587\u4EF6 SHA256
-                if file_info.lfs and file_info.lfs_sha256:
-                    actual = compute_sha256(output_path)
-                    if actual != file_info.lfs_sha256:
-                        output_path.unlink()
-                        raise ValueError(f"SHA256 mismatch: expected {file_info.lfs_sha256[:12]}..., got {actual[:12]}...")
+                # \u5B8C\u6574\u6027\u6821\u9A8C (LFS: SHA256, \u666E\u901A\u6587\u4EF6: Git blob SHA1)
+                if not self._verify_integrity(output_path, file_info):
+                    output_path.unlink()
+                    raise ValueError(f"\u6821\u9A8C\u5931\u8D25: {file_info.path}")
 
                 return True
                 
@@ -761,7 +767,24 @@ class HFDownloader:
                     time.sleep(2 ** attempt)  # \u6307\u6570\u9000\u907F
         
         return False
-    
+
+    def _verify_integrity(self, file_path: Path, file_info: FileInfo) -> bool:
+        """\u6821\u9A8C\u6587\u4EF6\u5B8C\u6574\u6027\uFF1ALFS \u7528 SHA256\uFF0C\u666E\u901A\u6587\u4EF6\u7528 Git blob SHA1"""
+        if file_info.lfs and file_info.lfs_sha256:
+            actual = compute_sha256(file_path)
+            expected = file_info.lfs_sha256
+        elif file_info.oid:
+            actual = compute_git_blob_sha1(file_path, file_info.size)
+            expected = file_info.oid
+        else:
+            return True  # \u6CA1\u6709\u6821\u9A8C\u4FE1\u606F\uFF0C\u8DF3\u8FC7
+        if actual != expected:
+            print(f"\\n\u26A0\uFE0F \u6821\u9A8C\u5931\u8D25: {file_info.path}")
+            print(f"   \u671F\u671B: {expected[:16]}...")
+            print(f"   \u5B9E\u9645: {actual[:16]}...")
+            return False
+        return True
+
     def download_all(self, files: Optional[List[FileInfo]] = None) -> Dict[str, Any]:
         """\u4E0B\u8F7D\u6240\u6709\u6587\u4EF6"""
         if files is None:

@@ -118,11 +118,24 @@ def compute_sha256(file_path: Path) -> str:
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
         while True:
-            chunk = f.read(8 * 1024 * 1024)  # 8MB chunks
+            chunk = f.read(8 * 1024 * 1024)
             if not chunk:
                 break
             sha256.update(chunk)
     return sha256.hexdigest()
+
+
+def compute_git_blob_sha1(file_path: Path, size: int) -> str:
+    """计算文件的 Git blob SHA1 (格式: sha1("blob <size>\\0<content>"))"""
+    sha1 = hashlib.sha1()
+    sha1.update(f"blob {size}\0".encode())
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            sha1.update(chunk)
+    return sha1.hexdigest()
 
 
 def import_to_cache(output_dir: Path, repo_id: str, repo_type: str,
@@ -306,14 +319,9 @@ class HFDownloader:
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 检查是否已存在：大小匹配 + LFS 文件校验 SHA256
+        # 检查是否已存在：大小匹配 + 完整性校验
         if output_path.exists() and output_path.stat().st_size == file_info.size:
-            if file_info.lfs and file_info.lfs_sha256:
-                if compute_sha256(output_path) == file_info.lfs_sha256:
-                    if progress_bar:
-                        progress_bar.update(file_info.size)
-                    return True
-            else:
+            if self._verify_integrity(output_path, file_info):
                 if progress_bar:
                     progress_bar.update(file_info.size)
                 return True
@@ -357,12 +365,10 @@ class HFDownloader:
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
-                # 校验 LFS 文件 SHA256
-                if file_info.lfs and file_info.lfs_sha256:
-                    actual = compute_sha256(output_path)
-                    if actual != file_info.lfs_sha256:
-                        output_path.unlink()
-                        raise ValueError(f"SHA256 mismatch: expected {file_info.lfs_sha256[:12]}..., got {actual[:12]}...")
+                # 完整性校验 (LFS: SHA256, 普通文件: Git blob SHA1)
+                if not self._verify_integrity(output_path, file_info):
+                    output_path.unlink()
+                    raise ValueError(f"校验失败: {file_info.path}")
 
                 return True
                 
@@ -373,7 +379,24 @@ class HFDownloader:
                     time.sleep(2 ** attempt)  # 指数退避
         
         return False
-    
+
+    def _verify_integrity(self, file_path: Path, file_info: FileInfo) -> bool:
+        """校验文件完整性：LFS 用 SHA256，普通文件用 Git blob SHA1"""
+        if file_info.lfs and file_info.lfs_sha256:
+            actual = compute_sha256(file_path)
+            expected = file_info.lfs_sha256
+        elif file_info.oid:
+            actual = compute_git_blob_sha1(file_path, file_info.size)
+            expected = file_info.oid
+        else:
+            return True  # 没有校验信息，跳过
+        if actual != expected:
+            print(f"\n⚠️ 校验失败: {file_info.path}")
+            print(f"   期望: {expected[:16]}...")
+            print(f"   实际: {actual[:16]}...")
+            return False
+        return True
+
     def download_all(self, files: Optional[List[FileInfo]] = None) -> Dict[str, Any]:
         """下载所有文件"""
         if files is None:
