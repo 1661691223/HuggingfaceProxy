@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-30T08:28:07.316Z
+ * 构建时间: 2026-06-30T08:48:06.832Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -403,6 +403,7 @@ Hugging Face \u6587\u4EF6\u4E0B\u8F7D\u5668
 import argparse
 import os
 import sys
+import signal
 import socket
 import json
 import hashlib
@@ -414,6 +415,9 @@ from urllib.parse import urljoin, quote
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
+
+# \u5168\u5C40\u5173\u95ED\u6807\u5FD7\uFF0C\u7528\u4E8E\u4F18\u96C5\u9000\u51FA
+_shutdown_requested = False
 
 try:
     import requests
@@ -718,6 +722,8 @@ class HFDownloader:
         resume_pos = 0
         if output_path.exists():
             resume_pos = output_path.stat().st_size
+            if resume_pos > 0 and progress_bar:
+                progress_bar.update(resume_pos)
         
         for attempt in range(MAX_RETRIES):
             try:
@@ -834,16 +840,23 @@ class HFDownloader:
             return success
         
         # \u4F7F\u7528\u7EBF\u7A0B\u6C60\u5E76\u884C\u4E0B\u8F7D
-        with ThreadPoolExecutor(max_workers=self.workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=self.workers)
+        try:
             futures = [executor.submit(download_task, f) for f in files]
             for future in as_completed(futures):
+                if _shutdown_requested:
+                    break
                 try:
                     future.result()
                 except Exception as e:
-                    print(f"\\n\u274C \u4EFB\u52A1\u5F02\u5E38: {e}")
-        
-        progress.close()
-        
+                    if not _shutdown_requested:
+                        print(f"\\n\u274C \u4EFB\u52A1\u5F02\u5E38: {e}")
+        except KeyboardInterrupt:
+            print("\\n\\n\u23F8\uFE0F  \u6B63\u5728\u505C\u6B62... (\u5DF2\u4E0B\u8F7D\u7684\u6587\u4EF6\u4E0B\u6B21\u53EF\u7EED\u4F20)")
+        finally:
+            executor.shutdown(wait=False)
+            progress.close()
+
         # \u6253\u5370\u7ED3\u679C
         print("\\n" + "=" * 60)
         print(f"\u2705 \u4E0B\u8F7D\u5B8C\u6210: {results['success']}/{len(files)} \u4E2A\u6587\u4EF6\u6210\u529F")
@@ -865,7 +878,14 @@ class HFDownloader:
         return f"{size:.2f} PB"
 
 
+def _on_interrupt(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
 def main():
+    signal.signal(signal.SIGINT, _on_interrupt)
+
     parser = argparse.ArgumentParser(
         description="\u901A\u8FC7\u4EE3\u7406\u4E0B\u8F7D Hugging Face \u4ED3\u5E93\u6587\u4EF6",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -15,6 +15,7 @@ Hugging Face 文件下载器
 import argparse
 import os
 import sys
+import signal
 import socket
 import json
 import hashlib
@@ -26,6 +27,9 @@ from urllib.parse import urljoin, quote
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
+
+# 全局关闭标志，用于优雅退出
+_shutdown_requested = False
 
 try:
     import requests
@@ -330,6 +334,8 @@ class HFDownloader:
         resume_pos = 0
         if output_path.exists():
             resume_pos = output_path.stat().st_size
+            if resume_pos > 0 and progress_bar:
+                progress_bar.update(resume_pos)
         
         for attempt in range(MAX_RETRIES):
             try:
@@ -446,16 +452,23 @@ class HFDownloader:
             return success
         
         # 使用线程池并行下载
-        with ThreadPoolExecutor(max_workers=self.workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=self.workers)
+        try:
             futures = [executor.submit(download_task, f) for f in files]
             for future in as_completed(futures):
+                if _shutdown_requested:
+                    break
                 try:
                     future.result()
                 except Exception as e:
-                    print(f"\n❌ 任务异常: {e}")
-        
-        progress.close()
-        
+                    if not _shutdown_requested:
+                        print(f"\n❌ 任务异常: {e}")
+        except KeyboardInterrupt:
+            print("\n\n⏸️  正在停止... (已下载的文件下次可续传)")
+        finally:
+            executor.shutdown(wait=False)
+            progress.close()
+
         # 打印结果
         print("\n" + "=" * 60)
         print(f"✅ 下载完成: {results['success']}/{len(files)} 个文件成功")
@@ -477,7 +490,14 @@ class HFDownloader:
         return f"{size:.2f} PB"
 
 
+def _on_interrupt(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
 def main():
+    signal.signal(signal.SIGINT, _on_interrupt)
+
     parser = argparse.ArgumentParser(
         description="通过代理下载 Hugging Face 仓库文件",
         formatter_class=argparse.RawDescriptionHelpFormatter,
