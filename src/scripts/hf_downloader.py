@@ -418,6 +418,73 @@ class HFDownloader:
             return False
         return True
 
+    def verify_only(self, files: Optional[List[FileInfo]] = None):
+        """仅校验文件完整性，不下载"""
+        if files is None:
+            files = self.get_file_list()
+
+        if not files:
+            print("⚠️ 没有找到任何文件")
+            return
+
+        print(f"\n🔍 校验模式: 共 {len(files)} 个文件")
+        print(f"📁 本地目录: {self.output_dir}\n")
+
+        ok_count = 0
+        missing_count = 0
+        mismatch_count = 0
+        no_info_count = 0
+
+        for f in files:
+            file_path = self.output_dir / f.path
+
+            # 确定期望值
+            if f.lfs and f.lfs_sha256:
+                expected = f.lfs_sha256
+                algo = "SHA256"
+            elif f.oid:
+                expected = f.oid
+                algo = "GitSHA1"
+            else:
+                expected = None
+                algo = None
+
+            # 文件不存在
+            if not file_path.exists():
+                missing_count += 1
+                expected_short = expected[:16] + "..." if expected else "(无校验信息)"
+                print(f"  ✗ 缺失  {f.path}")
+                print(f"         期望 {algo}: {expected_short}")
+                continue
+
+            # 无校验信息
+            if expected is None:
+                no_info_count += 1
+                print(f"  ~ 跳过  {f.path} (无校验信息)")
+                continue
+
+            # 计算实际值
+            if f.lfs and f.lfs_sha256:
+                actual = compute_sha256(file_path)
+            else:
+                actual = compute_git_blob_sha1(file_path, f.size)
+
+            if actual == expected:
+                ok_count += 1
+                print(f"  ✓ 通过  {f.path}")
+            else:
+                mismatch_count += 1
+                print(f"  ✗ 失败  {f.path}")
+                print(f"         期望 {algo}: {expected[:16]}...")
+                print(f"         实际 {algo}: {actual[:16]}...")
+
+        total = len(files)
+        print(f"\n{'='*60}")
+        print(f"总计 {total} 个文件:  ✓通过 {ok_count}   ✗缺失 {missing_count}   ✗不匹配 {mismatch_count}", end="")
+        if no_info_count:
+            print(f"   ~跳过 {no_info_count}", end="")
+        print()
+
     def download_all(self, files: Optional[List[FileInfo]] = None) -> Dict[str, Any]:
         """下载所有文件"""
         if files is None:
@@ -544,6 +611,8 @@ def main():
     parser.add_argument("--proxy-token", help="代理访问 Token (也可设置 PROXY_TOKEN 环境变量)")
     parser.add_argument("--list-only", "-l", action="store_true",
                         help="仅列出文件，不下载")
+    parser.add_argument("--verify-only", "-V", action="store_true",
+                        help="仅校验已有文件的完整性，不下载")
     parser.add_argument("--ipv4", "-4", action="store_true", help="强制使用 IPv4")
     parser.add_argument("--ipv6", "-6", action="store_true", help="强制使用 IPv6")
     parser.add_argument("--cache", "-c", action="store_true",
@@ -603,6 +672,8 @@ def main():
             print(f"{f.path:<50} {downloader._format_size(f.size):>12} {lfs_tag}")
         print("=" * 70)
         print(f"总计: {len(files)} 个文件, {downloader._format_size(sum(f.size for f in files))}")
+    elif args.verify_only:
+        downloader.verify_only()
     else:
         files = downloader.get_file_list()
         results = downloader.download_all(files)
