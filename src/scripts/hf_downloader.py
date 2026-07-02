@@ -386,10 +386,14 @@ class HFDownloader:
                                 progress_bar.update(len(chunk))
 
                 # 完整性校验
+                file_size_mb = file_info.size / (1024 * 1024)
+                print(f"\r  🔍 校验中: {file_info.path} ({file_size_mb:.1f} MB)...", end="", flush=True)
                 if not self._verify_integrity(output_path, file_info):
                     output_path.unlink()
                     resume_pos = 0
+                    print(f"\r  ❌ 校验失败: {file_info.path}")
                     raise ValueError(f"校验失败: {file_info.path}")
+                print(f"\r  ✅ 校验通过: {file_info.path}")
 
                 return True
 
