@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-07-16T01:47:11.011Z
+ * 构建时间: 2026-07-16T08:52:31.974Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -1127,7 +1127,8 @@ async function handleProxy(request, url) {
   });
   newRequest.headers.set("Host", upstream);
   try {
-    const response = await fetch(newRequest);
+    const signal = AbortSignal.timeout(3e4);
+    const response = await fetch(newRequest, { signal });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("Location");
       if (location) {

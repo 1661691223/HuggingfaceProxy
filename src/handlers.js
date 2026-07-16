@@ -69,8 +69,9 @@ export async function handleProxy(request, url) {
     newRequest.headers.set('Host', upstream);
 
     try {
-        // 4. 发起请求
-        const response = await fetch(newRequest);
+        // 4. 发起请求（设置 30s 超时，避免上游无响应时 Worker 挂住）
+        const signal = AbortSignal.timeout(30000);
+        const response = await fetch(newRequest, { signal });
 
         // 5. 拦截并重写重定向
         if ([301, 302, 303, 307, 308].includes(response.status)) {
