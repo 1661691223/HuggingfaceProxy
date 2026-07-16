@@ -69,9 +69,33 @@ export async function handleProxy(request, url) {
     newRequest.headers.set('Host', upstream);
 
     try {
-        // 4. 发起请求（设置 30s 超时，避免上游无响应时 Worker 挂住）
-        const signal = AbortSignal.timeout(30000);
-        const response = await fetch(newRequest, { signal });
+        // 4. 发起请求（带超时和重试，处理上游不稳定的情况如 XetHub CAS bridge）
+        const MAX_RETRIES = 3;
+        let response;
+        let lastError;
+
+        for (let i = 0; i < MAX_RETRIES; i++) {
+            try {
+                const signal = AbortSignal.timeout(30000);
+                response = await fetch(newRequest, { signal });
+
+                // 5xx 错误重试，其他状态码直接返回
+                if (response.status < 500 || i === MAX_RETRIES - 1) {
+                    break;
+                }
+                // 短暂等待后重试
+                await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+            } catch (e) {
+                lastError = e;
+                if (i < MAX_RETRIES - 1) {
+                    await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+                }
+            }
+        }
+
+        if (!response) {
+            throw lastError || new Error('All retries exhausted');
+        }
 
         // 5. 拦截并重写重定向
         if ([301, 302, 303, 307, 308].includes(response.status)) {
