@@ -85,16 +85,44 @@ curl -O https://your-proxy.com/hf_downloader.py
 # 安装依赖
 pip install requests tqdm
 
-# 下载模型
+# 基础下载
 python hf_downloader.py bert-base-uncased
 python hf_downloader.py openai/whisper-large-v3 --type model
 python hf_downloader.py bigcode/starcoder --revision main --workers 8
 
+# 访问控制（代理开启验证时需要）
+python hf_downloader.py bert-base-uncased --proxy-token YOUR_PROXY_TOKEN
+
+# 下载 gated 模型/数据集（需要 HuggingFace Token）
+python hf_downloader.py meta-llama/Llama-2-7b --token hf_xxxxxxxx --proxy-token YOUR_PROXY_TOKEN
+
 # 网络优化选项
 python hf_downloader.py bert-base-uncased -4   # 强制使用 IPv4
 python hf_downloader.py bert-base-uncased -6   # 强制使用 IPv6
-# 注：脚本会自动检测教育网环境（CERNET），如检测到则默认开启 IPv6 优化，无需手动指定
+
+# 仅列出文件（不下载）
+python hf_downloader.py bert-base-uncased --list-only
+
+# 仅校验已有文件完整性（不下载）
+python hf_downloader.py bert-base-uncased --verify-only
 ```
+
+### 完整参数列表
+
+| 参数 | 说明 |
+|------|------|
+| `--type`, `-t` | 仓库类型: model / dataset / space（默认: model） |
+| `--revision`, `-r` | 分支/版本（默认: main） |
+| `--output`, `-o` | 输出目录 |
+| `--workers`, `-w` | 并行下载数（默认: 4） |
+| `--proxy`, `-p` | 代理域名 |
+| `--token` | HuggingFace Token，用于访问 gated 仓库（也可设置 `HF_TOKEN` 环境变量） |
+| `--proxy-token` | 代理访问 Token（也可设置 `PROXY_TOKEN` 环境变量） |
+| `--list-only`, `-l` | 仅列出文件，不下载 |
+| `--verify-only`, `-V` | 仅校验已有文件的完整性，不下载 |
+| `--cache`, `-c` | 下载完成后导入到 HuggingFace Hub Cache |
+| `--ipv4`, `-4` | 强制使用 IPv4 |
+| `--ipv6`, `-6` | 强制使用 IPv6 |
 
 ### 导入到 HuggingFace Cache
 
@@ -161,9 +189,13 @@ tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
 
 | 变量名 | 说明 | 可选值 |
 |--------|------|--------|
-| `RESTRICT_BROWSER_ACCESS` | 限制浏览器直接访问代理 | `true` / `false` (未设置默认为 `false`) |
+| `RESTRICT_BROWSER_ACCESS` | 限制浏览器直接访问代理 | `true` / `false`（默认 `false`） |
+| `ACCESS_TOKEN` | 代理访问密码（设为 Secret 更安全） | 自定义字符串 |
 
 - `RESTRICT_BROWSER_ACCESS=true` 时，浏览器只能访问首页 (`/`) 和脚本下载页面 (`/hf_downloader.py`)，其他路径将被拒绝
+- `ACCESS_TOKEN` 设置后，客户端需通过 `--proxy-token` 参数、`?token=` 查询参数或 `Authorization: Bearer` 请求头提供 Token
+- `ACCESS_TOKEN` 建议通过 Cloudflare Dashboard → Workers → Settings → Variables and Secrets 添加为 **Secret** 类型
+- 浏览器首次访问限制页面时会弹出登录页，输入 Token 后将保存为 Cookie
 - 适用于希望限制浏览器直接下载，强制使用 Python 脚本的场景
 
 ### 代码配置
