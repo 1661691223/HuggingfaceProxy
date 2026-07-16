@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-06-30T08:51:31.517Z
+ * 构建时间: 2026-07-16T01:47:11.011Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -349,7 +349,7 @@ var home_default = `<!DOCTYPE html>
     <div class="container">
         <div class="header-row">
             <h1>\u{1F917} HuggingFace Proxy <span class="badge">v2.0</span></h1>
-            <a href="https://github.com/AinzRimuru/HuggingfaceProxy" target="_blank" class="github-star">
+            <a href="https://github.com/1661691223/HuggingfaceProxy" target="_blank" class="github-star">
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
                 </svg>
@@ -708,6 +708,7 @@ class HFDownloader:
     
     def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
         """\u4E0B\u8F7D\u5355\u4E2A\u6587\u4EF6\uFF0C\u652F\u6301\u65AD\u70B9\u7EED\u4F20\u548C\u5B8C\u6574\u6027\u6821\u9A8C"""
+        global _shutdown_requested
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -765,16 +766,22 @@ class HFDownloader:
 
                 with open(output_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                        if _shutdown_requested:
+                            return False
                         if chunk:
                             f.write(chunk)
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
                 # \u5B8C\u6574\u6027\u6821\u9A8C
+                file_size_mb = file_info.size / (1024 * 1024)
+                print(f"\\r  \u{1F50D} \u6821\u9A8C\u4E2D: {file_info.path} ({file_size_mb:.1f} MB)...", end="", flush=True)
                 if not self._verify_integrity(output_path, file_info):
                     output_path.unlink()
                     resume_pos = 0
+                    print(f"\\r  \u274C \u6821\u9A8C\u5931\u8D25: {file_info.path}")
                     raise ValueError(f"\u6821\u9A8C\u5931\u8D25: {file_info.path}")
+                print(f"\\r  \u2705 \u6821\u9A8C\u901A\u8FC7: {file_info.path}")
 
                 return True
 
@@ -802,6 +809,73 @@ class HFDownloader:
             print(f"   \u5B9E\u9645: {actual[:16]}...")
             return False
         return True
+
+    def verify_only(self, files: Optional[List[FileInfo]] = None):
+        """\u4EC5\u6821\u9A8C\u6587\u4EF6\u5B8C\u6574\u6027\uFF0C\u4E0D\u4E0B\u8F7D"""
+        if files is None:
+            files = self.get_file_list()
+
+        if not files:
+            print("\u26A0\uFE0F \u6CA1\u6709\u627E\u5230\u4EFB\u4F55\u6587\u4EF6")
+            return
+
+        print(f"\\n\u{1F50D} \u6821\u9A8C\u6A21\u5F0F: \u5171 {len(files)} \u4E2A\u6587\u4EF6")
+        print(f"\u{1F4C1} \u672C\u5730\u76EE\u5F55: {self.output_dir}\\n")
+
+        ok_count = 0
+        missing_count = 0
+        mismatch_count = 0
+        no_info_count = 0
+
+        for f in files:
+            file_path = self.output_dir / f.path
+
+            # \u786E\u5B9A\u671F\u671B\u503C
+            if f.lfs and f.lfs_sha256:
+                expected = f.lfs_sha256
+                algo = "SHA256"
+            elif f.oid:
+                expected = f.oid
+                algo = "GitSHA1"
+            else:
+                expected = None
+                algo = None
+
+            # \u6587\u4EF6\u4E0D\u5B58\u5728
+            if not file_path.exists():
+                missing_count += 1
+                expected_short = expected[:16] + "..." if expected else "(\u65E0\u6821\u9A8C\u4FE1\u606F)"
+                print(f"  \u2717 \u7F3A\u5931  {f.path}")
+                print(f"         \u671F\u671B {algo}: {expected_short}")
+                continue
+
+            # \u65E0\u6821\u9A8C\u4FE1\u606F
+            if expected is None:
+                no_info_count += 1
+                print(f"  ~ \u8DF3\u8FC7  {f.path} (\u65E0\u6821\u9A8C\u4FE1\u606F)")
+                continue
+
+            # \u8BA1\u7B97\u5B9E\u9645\u503C
+            if f.lfs and f.lfs_sha256:
+                actual = compute_sha256(file_path)
+            else:
+                actual = compute_git_blob_sha1(file_path, f.size)
+
+            if actual == expected:
+                ok_count += 1
+                print(f"  \u2713 \u901A\u8FC7  {f.path}")
+            else:
+                mismatch_count += 1
+                print(f"  \u2717 \u5931\u8D25  {f.path}")
+                print(f"         \u671F\u671B {algo}: {expected[:16]}...")
+                print(f"         \u5B9E\u9645 {algo}: {actual[:16]}...")
+
+        total = len(files)
+        print(f"\\n{'='*60}")
+        print(f"\u603B\u8BA1 {total} \u4E2A\u6587\u4EF6:  \u2713\u901A\u8FC7 {ok_count}   \u2717\u7F3A\u5931 {missing_count}   \u2717\u4E0D\u5339\u914D {mismatch_count}", end="")
+        if no_info_count:
+            print(f"   ~\u8DF3\u8FC7 {no_info_count}", end="")
+        print()
 
     def download_all(self, files: Optional[List[FileInfo]] = None) -> Dict[str, Any]:
         """\u4E0B\u8F7D\u6240\u6709\u6587\u4EF6"""
@@ -892,7 +966,12 @@ class HFDownloader:
 
 def _on_interrupt(signum, frame):
     global _shutdown_requested
+    if _shutdown_requested:
+        # \u7B2C\u4E8C\u6B21 Ctrl+C \u2192 \u5F3A\u5236\u9000\u51FA
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os._exit(1)
     _shutdown_requested = True
+    print("\\n\u23F8\uFE0F  \u6B63\u5728\u505C\u6B62... (\u518D\u6B21 Ctrl+C \u5F3A\u5236\u9000\u51FA)")
 
 
 def main():
@@ -924,6 +1003,8 @@ def main():
     parser.add_argument("--proxy-token", help="\u4EE3\u7406\u8BBF\u95EE Token (\u4E5F\u53EF\u8BBE\u7F6E PROXY_TOKEN \u73AF\u5883\u53D8\u91CF)")
     parser.add_argument("--list-only", "-l", action="store_true",
                         help="\u4EC5\u5217\u51FA\u6587\u4EF6\uFF0C\u4E0D\u4E0B\u8F7D")
+    parser.add_argument("--verify-only", "-V", action="store_true",
+                        help="\u4EC5\u6821\u9A8C\u5DF2\u6709\u6587\u4EF6\u7684\u5B8C\u6574\u6027\uFF0C\u4E0D\u4E0B\u8F7D")
     parser.add_argument("--ipv4", "-4", action="store_true", help="\u5F3A\u5236\u4F7F\u7528 IPv4")
     parser.add_argument("--ipv6", "-6", action="store_true", help="\u5F3A\u5236\u4F7F\u7528 IPv6")
     parser.add_argument("--cache", "-c", action="store_true",
@@ -983,6 +1064,8 @@ def main():
             print(f"{f.path:<50} {downloader._format_size(f.size):>12} {lfs_tag}")
         print("=" * 70)
         print(f"\u603B\u8BA1: {len(files)} \u4E2A\u6587\u4EF6, {downloader._format_size(sum(f.size for f in files))}")
+    elif args.verify_only:
+        downloader.verify_only()
     else:
         files = downloader.get_file_list()
         results = downloader.download_all(files)
