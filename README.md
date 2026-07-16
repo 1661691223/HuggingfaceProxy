@@ -101,10 +101,10 @@ python hf_downloader.py bert-base-uncased -4   # 强制使用 IPv4
 python hf_downloader.py bert-base-uncased -6   # 强制使用 IPv6
 
 # 仅列出文件（不下载）
-python hf_downloader.py bert-base-uncased --list-only
+python hf_downloader.py bert-base-uncased --list-only --proxy-token YOUR_PROXY_TOKEN
 
 # 仅校验已有文件完整性（不下载）
-python hf_downloader.py bert-base-uncased --verify-only
+python hf_downloader.py bert-base-uncased --verify-only --proxy-token YOUR_PROXY_TOKEN
 ```
 
 ### 完整参数列表
