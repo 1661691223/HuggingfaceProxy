@@ -399,7 +399,7 @@ class HFDownloader:
                 return True
 
             except Exception as e:
-                print(f"\n⚠️ 下载失败 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
+                tqdm.write(f"⚠️ 下载失败 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
                     import time
                     time.sleep(2 ** attempt)
@@ -417,9 +417,9 @@ class HFDownloader:
         else:
             return True  # 没有校验信息，跳过
         if actual != expected:
-            print(f"\n⚠️ 校验失败: {file_info.path}")
-            print(f"   期望: {expected[:16]}...")
-            print(f"   实际: {actual[:16]}...")
+            tqdm.write(f"⚠️ 校验失败: {file_info.path}")
+            tqdm.write(f"   期望: {expected[:16]}...")
+            tqdm.write(f"   实际: {actual[:16]}...")
             return False
         return True
 
