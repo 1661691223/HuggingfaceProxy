@@ -399,7 +399,14 @@ class HFDownloader:
                 return True
 
             except Exception as e:
-                tqdm.write(f"⚠️ 下载失败 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
+                error_str = str(e)
+                if 'IncompleteRead' in error_str or 'Connection broken' in error_str:
+                    # 网络抖动导致连接中断 → 简洁提示，断点续传会处理
+                    tqdm.write(f"⚠️ 连接中断 ({attempt + 1}/{MAX_RETRIES}): {file_info.path}，将断点续传")
+                    # 原始错误输出到 stderr 供排查
+                    print(f"[WARNING] Connection broken: {e}", file=sys.stderr)
+                else:
+                    tqdm.write(f"⚠️ 下载失败 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
                     import time
                     time.sleep(2 ** attempt)
