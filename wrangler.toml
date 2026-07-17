@@ -6,4 +6,4 @@ compatibility_date = "2025-01-01"
 mode = "smart"
 
 [vars]
-RESTRICT_BROWSER_ACCESS = "true"
+RESTRICT_BROWSER_ACCESS = "false"
