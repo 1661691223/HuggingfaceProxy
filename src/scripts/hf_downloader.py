@@ -364,9 +364,10 @@ class HFDownloader:
 
                 resp.raise_for_status()
 
-                # 服务器正确响应 Range → 追加模式，计入已下载字节
+                # 服务器正确响应 Range → 追加模式
+                # attempt==0 才补充已下载字节，重试时进度条已有上次累积，避免重复计数
                 if resp.status_code == 206:
-                    if progress_bar and resume_pos > 0:
+                    if progress_bar and resume_pos > 0 and attempt == 0:
                         progress_bar.update(resume_pos)
                     mode = "ab"
                 else:
