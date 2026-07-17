@@ -21,7 +21,9 @@ import json
 import hashlib
 import shutil
 import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, quote
 from typing import Optional, List, Dict, Any
@@ -203,9 +205,33 @@ def import_to_cache(output_dir: Path, repo_id: str, repo_type: str,
     print(f"   refs/{revision} -> {commit_sha[:12]}...")
 
 
+def setup_logging(repo_id: str) -> logging.Logger:
+    """初始化日志系统，日志文件保存在脚本所在目录的 logs/ 子目录"""
+    script_dir = Path(__file__).resolve().parent
+    log_dir = script_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = repo_id.replace("/", "_")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"{safe_name}_{timestamp}.log"
+
+    logger = logging.getLogger("hf_downloader")
+    logger.setLevel(logging.DEBUG)
+
+    # 文件 handler — 记录完整详情
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    logger.addHandler(fh)
+
+    return logger
+
+
 class HFDownloader:
     """Hugging Face 下载器"""
-    
+
     def __init__(
         self,
         repo_id: str,
@@ -215,7 +241,8 @@ class HFDownloader:
         proxy_domain: str = PROXY_DOMAIN,
         workers: int = DEFAULT_WORKERS,
         token: Optional[str] = None,
-        proxy_token: Optional[str] = None
+        proxy_token: Optional[str] = None,
+        logger: Optional[logging.Logger] = None
     ):
         self.repo_id = repo_id
         self.repo_type = repo_type
@@ -224,6 +251,7 @@ class HFDownloader:
         self.workers = workers
         self.token = token or os.environ.get("HF_TOKEN")
         self.proxy_token = proxy_token or os.environ.get("PROXY_TOKEN")
+        self.logger = logger or logging.getLogger("hf_downloader")
 
         # 设置输出目录
         if output_dir:
@@ -269,11 +297,14 @@ class HFDownloader:
         """获取仓库中所有文件的列表"""
         url = self._url(f"{self.api_prefix}/tree/{self.revision}")
 
+        self.logger.info(f"获取文件列表: {url}")
         print(f"📂 正在获取文件列表: {url}")
-        
+
         all_files = []
         self._fetch_tree_recursive("", all_files)
-        
+
+        total_size = sum(f.size for f in all_files)
+        self.logger.info(f"文件列表获取完成: {len(all_files)} 个文件, 总大小 {total_size:,} bytes ({total_size / (1024**3):.2f} GB)")
         print(f"✅ 共发现 {len(all_files)} 个文件")
         return all_files
     
@@ -327,10 +358,12 @@ class HFDownloader:
         # 文件已存在且完整 → 跳过
         if output_path.exists() and output_path.stat().st_size == file_info.size:
             if self._verify_integrity(output_path, file_info):
+                self.logger.info(f"跳过(已存在): {file_info.path}")
                 if progress_bar:
                     progress_bar.update(file_info.size)
                 return True
             # 校验失败，删除重新下载
+            self.logger.warning(f"已存在文件校验失败，重新下载: {file_info.path}")
             output_path.unlink()
 
         # 断点续传：记录已有字节数
@@ -341,6 +374,8 @@ class HFDownloader:
                 # 本地文件异常（比预期大），删除重下
                 output_path.unlink()
                 resume_pos = 0
+        if resume_pos > 0:
+            self.logger.info(f"断点续传: {file_info.path} @ {resume_pos:,}/{file_info.size:,} bytes")
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -401,11 +436,10 @@ class HFDownloader:
             except Exception as e:
                 error_str = str(e)
                 if 'IncompleteRead' in error_str or 'Connection broken' in error_str:
-                    # 网络抖动导致连接中断 → 简洁提示，断点续传会处理
+                    self.logger.warning(f"连接中断: {file_info.path} - {e}")
                     tqdm.write(f"⚠️ 连接中断 ({attempt + 1}/{MAX_RETRIES}): {file_info.path}，将断点续传")
-                    # 原始错误输出到 stderr 供排查
-                    print(f"[WARNING] Connection broken: {e}", file=sys.stderr)
                 else:
+                    self.logger.error(f"下载失败: {file_info.path} - {e}")
                     tqdm.write(f"⚠️ 下载失败 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
                     import time
@@ -424,6 +458,7 @@ class HFDownloader:
         else:
             return True  # 没有校验信息，跳过
         if actual != expected:
+            self.logger.warning(f"校验失败: {file_info.path} 期望={expected[:16]}... 实际={actual[:16]}...")
             tqdm.write(f"⚠️ 校验失败: {file_info.path}")
             tqdm.write(f"   期望: {expected[:16]}...")
             tqdm.write(f"   实际: {actual[:16]}...")
@@ -508,6 +543,7 @@ class HFDownloader:
         
         # 计算总大小
         total_size = sum(f.size for f in files)
+        self.logger.info(f"开始下载: {len(files)} 个文件, 总大小 {total_size:,} bytes ({total_size / (1024**3):.2f} GB), 并行数 {self.workers}")
         print(f"\n📦 准备下载 {len(files)} 个文件, 总大小: {self._format_size(total_size)}")
         print(f"📁 输出目录: {self.output_dir}")
         print(f"🔧 并行数: {self.workers}\n")
@@ -558,12 +594,14 @@ class HFDownloader:
                     if not _shutdown_requested:
                         print(f"\n❌ 任务异常: {e}")
         except KeyboardInterrupt:
+            self.logger.warning("用户中断下载 (Ctrl+C)")
             print("\n\n⏸️  正在停止... (已下载的文件下次可续传)")
         finally:
             executor.shutdown(wait=False)
             progress.close()
 
         # 打印结果
+        self.logger.info(f"下载结束: 成功={results['success']}, 失败={results['failed']}, 总计={len(files)}")
         print("\n" + "=" * 60)
         print(f"✅ 下载完成: {results['success']}/{len(files)} 个文件成功")
         if results["failed"] > 0:
@@ -596,6 +634,14 @@ def _on_interrupt(signum, frame):
 
 def main():
     signal.signal(signal.SIGINT, _on_interrupt)
+
+    # 提前解析 repo_id 用于日志初始化
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("repo_id", nargs="?", default="unknown")
+    pre_args, _ = pre_parser.parse_known_args()
+    logger = setup_logging(pre_args.repo_id)
+    logger.info("=" * 60)
+    logger.info(f"HF Downloader 启动")
 
     parser = argparse.ArgumentParser(
         description="通过代理下载 Hugging Face 仓库文件",
@@ -653,6 +699,8 @@ def main():
         print("🌐 已启用强制 IPv4 解析")
         configure_dns(force_ipv4=True)
     
+    logger.info(f"配置: repo={args.repo_id}, type={args.type}, revision={args.revision}, proxy={args.proxy}, workers={args.workers}")
+
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║          🤗 Hugging Face 代理下载器                          ║
@@ -663,7 +711,7 @@ def main():
 ║  代理: {args.proxy:<53} ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
-    
+
     downloader = HFDownloader(
         repo_id=args.repo_id,
         repo_type=args.type,
@@ -672,7 +720,8 @@ def main():
         proxy_domain=args.proxy,
         workers=args.workers,
         token=args.token,
-        proxy_token=args.proxy_token
+        proxy_token=args.proxy_token,
+        logger=logger
     )
     
     if args.list_only:
@@ -704,6 +753,10 @@ def main():
             except Exception as e:
                 print(f"\n❌ 导入 cache 失败: {e}")
                 print(f"   文件仍保留在: {downloader.output_dir}")
+
+    logger.info("HF Downloader 结束")
+    for handler in logger.handlers:
+        handler.close()
 
 
 if __name__ == "__main__":
