@@ -309,45 +309,59 @@ class HFDownloader:
         return all_files
     
     def _fetch_tree_recursive(self, path: str, files: List[FileInfo]) -> None:
-        """递归获取目录树"""
-        params = {"recursive": "true"} if not path else {}
-        
+        """递归获取目录树（支持 HuggingFace API 分页）"""
         if path:
             url = self._url(f"{self.api_prefix}/tree/{self.revision}/{path}")
+            params = {}
         else:
             url = self._url(f"{self.api_prefix}/tree/{self.revision}")
-            params["recursive"] = "true"
-        
-        try:
-            resp = self.session.get(url, params=params, timeout=30)
-            resp.raise_for_status()
-            items = resp.json()
-            
-            for item in items:
-                if item.get("type") == "file":
-                    file_path = item["path"]
-                    size = item.get("size", 0)
-                    oid = item.get("oid", "")
-                    lfs = item.get("lfs") is not None
-                    
-                    # 构建下载 URL
-                    encoded_path = quote(file_path, safe="/")
-                    download_url = self._url(f"{self.download_prefix}/{encoded_path}")
-                    
-                    lfs_sha256 = item.get("lfs", {}).get("oid", "") if lfs else ""
+            params = {"recursive": "true"}
 
-                    files.append(FileInfo(
-                        path=file_path,
-                        size=size,
-                        oid=oid,
-                        lfs=lfs,
-                        lfs_sha256=lfs_sha256,
-                        download_url=download_url
-                    ))
-                    
-        except requests.RequestException as e:
-            print(f"⚠️ 获取文件列表失败: {e}")
-            raise
+        page = 0
+        while url:
+            page += 1
+            try:
+                resp = self.session.get(url, params=params, timeout=30)
+                resp.raise_for_status()
+                # 第二页起 params 已包含在 url 的 cursor 中，避免重复
+                params = {}
+
+                items = resp.json()
+                for item in items:
+                    if item.get("type") == "file":
+                        fpath = item["path"]
+                        size = item.get("size", 0)
+                        oid = item.get("oid", "")
+                        lfs = item.get("lfs") is not None
+
+                        encoded_path = quote(fpath, safe="/")
+                        download_url = self._url(f"{self.download_prefix}/{encoded_path}")
+                        lfs_sha256 = item.get("lfs", {}).get("oid", "") if lfs else ""
+
+                        files.append(FileInfo(
+                            path=fpath,
+                            size=size,
+                            oid=oid,
+                            lfs=lfs,
+                            lfs_sha256=lfs_sha256,
+                            download_url=download_url
+                        ))
+
+                # 解析 Link 头获取下一页 URL
+                link_header = resp.headers.get("Link", "")
+                url = None
+                if link_header:
+                    # RFC 5988: <url>; rel="next"
+                    for part in link_header.split(","):
+                        if 'rel="next"' in part:
+                            url = part.split(">")[0].lstrip("<")
+                            break
+
+            except requests.RequestException as e:
+                print(f"⚠️ 获取文件列表失败 (第 {page} 页): {e}")
+                raise
+
+        self.logger.info(f"文件列表共 {page} 页, {len(files)} 个文件")
     
     def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
         """下载单个文件，支持断点续传和完整性校验"""
