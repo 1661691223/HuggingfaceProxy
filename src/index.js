@@ -18,7 +18,7 @@
  *   - 仅在 RESTRICT_BROWSER_ACCESS=true 时生效
  */
 
-import { handleHome, handleDownloaderScript, handleProxy } from './handlers.js';
+import { handleHome, handleDownloaderScript, handleProxy, handleVersion } from './handlers.js';
 import { validateBrowserAccess, isBrowserRequest, isAllowedBrowserPath } from './utils.js';
 
 export default {
@@ -67,6 +67,11 @@ export default {
             // 下载器脚本
             case pathname === '/hf_downloader.py':
                 response = handleDownloaderScript(hostname);
+                break;
+
+            // 版本查询
+            case pathname === '/version':
+                response = handleVersion();
                 break;
 
             // 代理请求

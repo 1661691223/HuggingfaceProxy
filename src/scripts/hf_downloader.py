@@ -30,6 +30,8 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
 
+__version__ = "1.8.0"
+
 # 全局关闭标志，用于优雅退出
 _shutdown_requested = False
 
@@ -702,13 +704,69 @@ def _on_interrupt(signum, frame):
     print("\n⏸️  正在停止... (再次 Ctrl+C 强制退出)")
 
 
+def check_update(proxy_domain: str):
+    """检查脚本版本，如有新版本则自动更新"""
+    try:
+        resp = requests.get(f"https://{proxy_domain}/version", timeout=10)
+        remote_version = resp.text.strip()
+
+        from packaging.version import Version
+    except ImportError:
+        # 简单字符串比较
+        if remote_version != __version__:
+            _do_update(proxy_domain, remote_version)
+        return
+    except Exception:
+        return  # 检查失败，静默跳过
+
+    try:
+        if Version(remote_version) > Version(__version__):
+            _do_update(proxy_domain, remote_version)
+    except Exception:
+        return
+
+
+def _do_update(proxy_domain: str, new_version: str):
+    """下载新版本脚本并替换当前文件"""
+    print(f"\n🔄 发现新版本 v{new_version} (当前 v{__version__})，正在自动更新...")
+    try:
+        resp = requests.get(f"https://{proxy_domain}/hf_downloader.py", timeout=60)
+        resp.raise_for_status()
+
+        current_file = Path(__file__).resolve()
+        # 备份旧文件
+        backup = current_file.with_suffix(".py.bak")
+        shutil.copy2(current_file, backup)
+
+        # 写入新版本
+        with open(current_file, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+
+        print(f"✅ 更新完成 v{new_version}，请重新运行命令")
+        # 还原备份（新版写入成功后清理）
+        if backup.exists():
+            backup.unlink()
+        sys.exit(0)
+    except Exception as e:
+        print(f"⚠️ 自动更新失败: {e}")
+        # 恢复备份
+        backup = Path(__file__).resolve().with_suffix(".py.bak")
+        if backup.exists():
+            shutil.copy2(backup, Path(__file__).resolve())
+            backup.unlink()
+
+
 def main():
     signal.signal(signal.SIGINT, _on_interrupt)
 
-    # 提前解析 repo_id 用于日志初始化
+    # 提前解析 repo_id 和 proxy 用于日志初始化和版本检查
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("repo_id", nargs="?", default="unknown")
+    pre_parser.add_argument("--proxy", "-p", default=PROXY_DOMAIN)
     pre_args, _ = pre_parser.parse_known_args()
+
+    # 检查更新
+    check_update(pre_args.proxy)
     logger = setup_logging(pre_args.repo_id)
     logger.info("=" * 60)
     logger.info(f"HF Downloader 启动")

@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-07-16T08:59:08.923Z
+ * 构建时间: 2026-07-20T09:43:09.086Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -163,7 +163,7 @@ function isBrowserRequest(request) {
   return acceptsHtml && isBrowserUA && !isToolUA;
 }
 function isAllowedBrowserPath(pathname) {
-  const allowedPaths = ["/", "", "/hf_downloader.py"];
+  const allowedPaths = ["/", "", "/hf_downloader.py", "/version"];
   return allowedPaths.includes(pathname);
 }
 function validateBrowserAccess(request, pathname, restrictBrowserAccess, accessToken) {
@@ -409,12 +409,16 @@ import json
 import hashlib
 import shutil
 import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, quote
+from urllib.parse import urljoin, quote, urlparse
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
+
+__version__ = "1.8.0"
 
 # \u5168\u5C40\u5173\u95ED\u6807\u5FD7\uFF0C\u7528\u4E8E\u4F18\u96C5\u9000\u51FA
 _shutdown_requested = False
@@ -431,7 +435,7 @@ except ImportError:
 PROXY_DOMAIN = "{{PROXY_DOMAIN}}"  # \u4F60\u7684\u4EE3\u7406\u57DF\u540D
 MAX_RETRIES = 3                    # \u6700\u5927\u91CD\u8BD5\u6B21\u6570
 CHUNK_SIZE = 64 * 1024 * 1024      # 64MB \u6BCF\u5757
-DEFAULT_WORKERS = 4                # \u9ED8\u8BA4\u5E76\u884C\u4E0B\u8F7D\u6570
+DEFAULT_WORKERS = 8                # \u9ED8\u8BA4\u5E76\u884C\u4E0B\u8F7D\u6570
 
 
 def check_cernet() -> bool:
@@ -591,9 +595,33 @@ def import_to_cache(output_dir: Path, repo_id: str, repo_type: str,
     print(f"   refs/{revision} -> {commit_sha[:12]}...")
 
 
+def setup_logging(repo_id: str) -> logging.Logger:
+    """\u521D\u59CB\u5316\u65E5\u5FD7\u7CFB\u7EDF\uFF0C\u65E5\u5FD7\u6587\u4EF6\u4FDD\u5B58\u5728\u811A\u672C\u6240\u5728\u76EE\u5F55\u7684 logs/ \u5B50\u76EE\u5F55"""
+    script_dir = Path(__file__).resolve().parent
+    log_dir = script_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = repo_id.replace("/", "_")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"{safe_name}_{timestamp}.log"
+
+    logger = logging.getLogger("hf_downloader")
+    logger.setLevel(logging.DEBUG)
+
+    # \u6587\u4EF6 handler \u2014 \u8BB0\u5F55\u5B8C\u6574\u8BE6\u60C5
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    logger.addHandler(fh)
+
+    return logger
+
+
 class HFDownloader:
     """Hugging Face \u4E0B\u8F7D\u5668"""
-    
+
     def __init__(
         self,
         repo_id: str,
@@ -603,7 +631,8 @@ class HFDownloader:
         proxy_domain: str = PROXY_DOMAIN,
         workers: int = DEFAULT_WORKERS,
         token: Optional[str] = None,
-        proxy_token: Optional[str] = None
+        proxy_token: Optional[str] = None,
+        logger: Optional[logging.Logger] = None
     ):
         self.repo_id = repo_id
         self.repo_type = repo_type
@@ -612,6 +641,7 @@ class HFDownloader:
         self.workers = workers
         self.token = token or os.environ.get("HF_TOKEN")
         self.proxy_token = proxy_token or os.environ.get("PROXY_TOKEN")
+        self.logger = logger or logging.getLogger("hf_downloader")
 
         # \u8BBE\u7F6E\u8F93\u51FA\u76EE\u5F55
         if output_dir:
@@ -657,68 +687,96 @@ class HFDownloader:
         """\u83B7\u53D6\u4ED3\u5E93\u4E2D\u6240\u6709\u6587\u4EF6\u7684\u5217\u8868"""
         url = self._url(f"{self.api_prefix}/tree/{self.revision}")
 
+        self.logger.info(f"\u83B7\u53D6\u6587\u4EF6\u5217\u8868: {url}")
         print(f"\u{1F4C2} \u6B63\u5728\u83B7\u53D6\u6587\u4EF6\u5217\u8868: {url}")
-        
+
         all_files = []
         self._fetch_tree_recursive("", all_files)
-        
-        print(f"\u2705 \u5171\u53D1\u73B0 {len(all_files)} \u4E2A\u6587\u4EF6")
+
+        total_size = sum(f.size for f in all_files)
+        self.logger.info(f"\u6587\u4EF6\u5217\u8868\u83B7\u53D6\u5B8C\u6210: {len(all_files)} \u4E2A\u6587\u4EF6, \u603B\u5927\u5C0F {total_size:,} bytes ({total_size / (1024**3):.2f} GB)")
+        print(f"\u2705 \u5171\u53D1\u73B0 {len(all_files)} \u4E2A\u6587\u4EF6 ({self._format_size(total_size)})")
         return all_files
     
     def _fetch_tree_recursive(self, path: str, files: List[FileInfo]) -> None:
-        """\u9012\u5F52\u83B7\u53D6\u76EE\u5F55\u6811"""
-        params = {"recursive": "true"} if not path else {}
-        
+        """\u9012\u5F52\u83B7\u53D6\u76EE\u5F55\u6811\uFF08\u652F\u6301 HuggingFace API \u5206\u9875\uFF09"""
         if path:
             url = self._url(f"{self.api_prefix}/tree/{self.revision}/{path}")
+            params = {}
         else:
             url = self._url(f"{self.api_prefix}/tree/{self.revision}")
-            params["recursive"] = "true"
-        
-        try:
-            resp = self.session.get(url, params=params, timeout=30)
-            resp.raise_for_status()
-            items = resp.json()
-            
-            for item in items:
-                if item.get("type") == "file":
-                    file_path = item["path"]
-                    size = item.get("size", 0)
-                    oid = item.get("oid", "")
-                    lfs = item.get("lfs") is not None
-                    
-                    # \u6784\u5EFA\u4E0B\u8F7D URL
-                    encoded_path = quote(file_path, safe="/")
-                    download_url = self._url(f"{self.download_prefix}/{encoded_path}")
-                    
-                    lfs_sha256 = item.get("lfs", {}).get("oid", "") if lfs else ""
+            params = {"recursive": "true"}
 
-                    files.append(FileInfo(
-                        path=file_path,
-                        size=size,
-                        oid=oid,
-                        lfs=lfs,
-                        lfs_sha256=lfs_sha256,
-                        download_url=download_url
-                    ))
-                    
-        except requests.RequestException as e:
-            print(f"\u26A0\uFE0F \u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25: {e}")
-            raise
+        page = 0
+        total_size = 0
+        while url:
+            page += 1
+            try:
+                resp = self.session.get(url, params=params, timeout=30)
+                resp.raise_for_status()
+                # \u7B2C\u4E8C\u9875\u8D77 params \u5DF2\u5305\u542B\u5728 url \u7684 cursor \u4E2D\uFF0C\u907F\u514D\u91CD\u590D
+                params = {}
+
+                items = resp.json()
+                for item in items:
+                    if item.get("type") == "file":
+                        fpath = item["path"]
+                        size = item.get("size", 0)
+                        total_size += size
+                        oid = item.get("oid", "")
+                        lfs = item.get("lfs") is not None
+
+                        encoded_path = quote(fpath, safe="/")
+                        download_url = self._url(f"{self.download_prefix}/{encoded_path}")
+                        lfs_sha256 = item.get("lfs", {}).get("oid", "") if lfs else ""
+
+                        files.append(FileInfo(
+                            path=fpath,
+                            size=size,
+                            oid=oid,
+                            lfs=lfs,
+                            lfs_sha256=lfs_sha256,
+                            download_url=download_url
+                        ))
+
+                # \u5B9E\u65F6\u6253\u5370\u5206\u9875\u8FDB\u5EA6
+                size_str = self._format_size(total_size)
+                print(f"\\r  Listed {len(files)} files ({size_str})...", end="", flush=True)
+
+                # \u89E3\u6790 Link \u5934\u83B7\u53D6\u4E0B\u4E00\u9875 URL
+                link_header = resp.headers.get("Link", "")
+                url = None
+                if link_header:
+                    for part in link_header.split(","):
+                        if 'rel="next"' in part:
+                            raw_url = part.split(">")[0].lstrip("<")
+                            # Link \u5934\u6307\u5411 huggingface.co\uFF0C\u9700\u8981\u6539\u5199\u4E3A\u8D70\u4EE3\u7406
+                            parsed = urlparse(raw_url)
+                            url = self._url(parsed.path + ("?" + parsed.query if parsed.query else ""))
+                            break
+
+            except requests.RequestException as e:
+                print(f"\\n\u26A0\uFE0F \u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25 (\u7B2C {page} \u9875): {e}")
+                raise
+
+        print()  # \u6362\u884C
+        self.logger.info(f"\u6587\u4EF6\u5217\u8868\u5171 {page} \u9875, {len(files)} \u4E2A\u6587\u4EF6")
     
-    def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
-        """\u4E0B\u8F7D\u5355\u4E2A\u6587\u4EF6\uFF0C\u652F\u6301\u65AD\u70B9\u7EED\u4F20\u548C\u5B8C\u6574\u6027\u6821\u9A8C"""
+    def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None, verify: bool = True) -> bool:
+        """\u4E0B\u8F7D\u5355\u4E2A\u6587\u4EF6\uFF0C\u652F\u6301\u65AD\u70B9\u7EED\u4F20\u3002verify=False \u8DF3\u8FC7\u672B\u5C3E\u6821\u9A8C\uFF08\u4F9B\u6D41\u6C34\u7EBF\u4F7F\u7528\uFF09"""
         global _shutdown_requested
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # \u6587\u4EF6\u5DF2\u5B58\u5728\u4E14\u5B8C\u6574 \u2192 \u8DF3\u8FC7
+        # \u6587\u4EF6\u5DF2\u5B58\u5728\u4E14\u5B8C\u6574 \u2192 \u8DF3\u8FC7\uFF08\u59CB\u7EC8\u6821\u9A8C\uFF0C\u5DF2\u5B58\u5728\u6587\u4EF6\u6821\u9A8C\u5F88\u5FEB\uFF09
         if output_path.exists() and output_path.stat().st_size == file_info.size:
             if self._verify_integrity(output_path, file_info):
+                self.logger.info(f"\u8DF3\u8FC7(\u5DF2\u5B58\u5728): {file_info.path}")
                 if progress_bar:
                     progress_bar.update(file_info.size)
                 return True
             # \u6821\u9A8C\u5931\u8D25\uFF0C\u5220\u9664\u91CD\u65B0\u4E0B\u8F7D
+            self.logger.warning(f"\u5DF2\u5B58\u5728\u6587\u4EF6\u6821\u9A8C\u5931\u8D25\uFF0C\u91CD\u65B0\u4E0B\u8F7D: {file_info.path}")
             output_path.unlink()
 
         # \u65AD\u70B9\u7EED\u4F20\uFF1A\u8BB0\u5F55\u5DF2\u6709\u5B57\u8282\u6570
@@ -729,6 +787,8 @@ class HFDownloader:
                 # \u672C\u5730\u6587\u4EF6\u5F02\u5E38\uFF08\u6BD4\u9884\u671F\u5927\uFF09\uFF0C\u5220\u9664\u91CD\u4E0B
                 output_path.unlink()
                 resume_pos = 0
+        if resume_pos > 0:
+            self.logger.info(f"\u65AD\u70B9\u7EED\u4F20: {file_info.path} @ {resume_pos:,}/{file_info.size:,} bytes")
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -752,9 +812,10 @@ class HFDownloader:
 
                 resp.raise_for_status()
 
-                # \u670D\u52A1\u5668\u6B63\u786E\u54CD\u5E94 Range \u2192 \u8FFD\u52A0\u6A21\u5F0F\uFF0C\u8BA1\u5165\u5DF2\u4E0B\u8F7D\u5B57\u8282
+                # \u670D\u52A1\u5668\u6B63\u786E\u54CD\u5E94 Range \u2192 \u8FFD\u52A0\u6A21\u5F0F
+                # attempt==0 \u624D\u8865\u5145\u5DF2\u4E0B\u8F7D\u5B57\u8282\uFF0C\u91CD\u8BD5\u65F6\u8FDB\u5EA6\u6761\u5DF2\u6709\u4E0A\u6B21\u7D2F\u79EF\uFF0C\u907F\u514D\u91CD\u590D\u8BA1\u6570
                 if resp.status_code == 206:
-                    if progress_bar and resume_pos > 0:
+                    if progress_bar and resume_pos > 0 and attempt == 0:
                         progress_bar.update(resume_pos)
                     mode = "ab"
                 else:
@@ -773,20 +834,27 @@ class HFDownloader:
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
-                # \u5B8C\u6574\u6027\u6821\u9A8C
-                file_size_mb = file_info.size / (1024 * 1024)
-                print(f"\\r  \u{1F50D} \u6821\u9A8C\u4E2D: {file_info.path} ({file_size_mb:.1f} MB)...", end="", flush=True)
-                if not self._verify_integrity(output_path, file_info):
-                    output_path.unlink()
-                    resume_pos = 0
-                    print(f"\\r  \u274C \u6821\u9A8C\u5931\u8D25: {file_info.path}")
-                    raise ValueError(f"\u6821\u9A8C\u5931\u8D25: {file_info.path}")
-                print(f"\\r  \u2705 \u6821\u9A8C\u901A\u8FC7: {file_info.path}")
+                # \u5B8C\u6574\u6027\u6821\u9A8C\uFF08\u4EC5 verify=True \u65F6\uFF09
+                if verify:
+                    file_size_mb = file_info.size / (1024 * 1024)
+                    tqdm.write(f"  \u{1F50D} \u6821\u9A8C\u4E2D: {file_info.path} ({file_size_mb:.1f} MB)...")
+                    if not self._verify_integrity(output_path, file_info):
+                        output_path.unlink()
+                        resume_pos = 0
+                        tqdm.write(f"  \u274C \u6821\u9A8C\u5931\u8D25: {file_info.path}")
+                        raise ValueError(f"\u6821\u9A8C\u5931\u8D25: {file_info.path}")
+                    tqdm.write(f"  \u2705 \u6821\u9A8C\u901A\u8FC7: {file_info.path}")
 
                 return True
 
             except Exception as e:
-                print(f"\\n\u26A0\uFE0F \u4E0B\u8F7D\u5931\u8D25 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
+                error_str = str(e)
+                if 'IncompleteRead' in error_str or 'Connection broken' in error_str:
+                    self.logger.warning(f"\u8FDE\u63A5\u4E2D\u65AD: {file_info.path} - {e}")
+                    tqdm.write(f"\u26A0\uFE0F \u8FDE\u63A5\u4E2D\u65AD ({attempt + 1}/{MAX_RETRIES}): {file_info.path}\uFF0C\u5C06\u65AD\u70B9\u7EED\u4F20")
+                else:
+                    self.logger.error(f"\u4E0B\u8F7D\u5931\u8D25: {file_info.path} - {e}")
+                    tqdm.write(f"\u26A0\uFE0F \u4E0B\u8F7D\u5931\u8D25 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
                     import time
                     time.sleep(2 ** attempt)
@@ -804,10 +872,26 @@ class HFDownloader:
         else:
             return True  # \u6CA1\u6709\u6821\u9A8C\u4FE1\u606F\uFF0C\u8DF3\u8FC7
         if actual != expected:
-            print(f"\\n\u26A0\uFE0F \u6821\u9A8C\u5931\u8D25: {file_info.path}")
-            print(f"   \u671F\u671B: {expected[:16]}...")
-            print(f"   \u5B9E\u9645: {actual[:16]}...")
+            self.logger.warning(f"\u6821\u9A8C\u5931\u8D25: {file_info.path} \u671F\u671B={expected[:16]}... \u5B9E\u9645={actual[:16]}...")
+            tqdm.write(f"\u26A0\uFE0F \u6821\u9A8C\u5931\u8D25: {file_info.path}")
+            tqdm.write(f"   \u671F\u671B: {expected[:16]}...")
+            tqdm.write(f"   \u5B9E\u9645: {actual[:16]}...")
             return False
+        return True
+
+    def _verify_single_file(self, file_info: FileInfo) -> bool:
+        """\u6821\u9A8C\u5355\u4E2A\u5DF2\u4E0B\u8F7D\u6587\u4EF6\uFF08\u4F9B\u6821\u9A8C\u7EBF\u7A0B\u6C60\u8C03\u7528\uFF09"""
+        output_path = self.output_dir / file_info.path
+        if not output_path.exists() or output_path.stat().st_size != file_info.size:
+            return False
+        file_size_mb = file_info.size / (1024 * 1024)
+        tqdm.write(f"  \u{1F50D} \u6821\u9A8C\u4E2D: {file_info.path} ({file_size_mb:.1f} MB)...")
+        if not self._verify_integrity(output_path, file_info):
+            self.logger.warning(f"\u6821\u9A8C\u5931\u8D25: {file_info.path}")
+            tqdm.write(f"  \u274C \u6821\u9A8C\u5931\u8D25: {file_info.path}")
+            return False
+        self.logger.info(f"\u6821\u9A8C\u901A\u8FC7: {file_info.path}")
+        tqdm.write(f"  \u2705 \u6821\u9A8C\u901A\u8FC7: {file_info.path}")
         return True
 
     def verify_only(self, files: Optional[List[FileInfo]] = None):
@@ -888,6 +972,7 @@ class HFDownloader:
         
         # \u8BA1\u7B97\u603B\u5927\u5C0F
         total_size = sum(f.size for f in files)
+        self.logger.info(f"\u5F00\u59CB\u4E0B\u8F7D: {len(files)} \u4E2A\u6587\u4EF6, \u603B\u5927\u5C0F {total_size:,} bytes ({total_size / (1024**3):.2f} GB), \u5E76\u884C\u6570 {self.workers}")
         print(f"\\n\u{1F4E6} \u51C6\u5907\u4E0B\u8F7D {len(files)} \u4E2A\u6587\u4EF6, \u603B\u5927\u5C0F: {self._format_size(total_size)}")
         print(f"\u{1F4C1} \u8F93\u51FA\u76EE\u5F55: {self.output_dir}")
         print(f"\u{1F527} \u5E76\u884C\u6570: {self.workers}\\n")
@@ -914,36 +999,69 @@ class HFDownloader:
         
         results = {"success": 0, "failed": 0, "failed_files": []}
         lock = threading.Lock()
-        
-        def download_task(file_info: FileInfo) -> bool:
-            success = self.download_file(file_info, progress)
-            with lock:
-                if success:
-                    results["success"] += 1
-                else:
-                    results["failed"] += 1
-                    results["failed_files"].append(file_info.path)
-            return success
-        
-        # \u4F7F\u7528\u7EBF\u7A0B\u6C60\u5E76\u884C\u4E0B\u8F7D
-        executor = ThreadPoolExecutor(max_workers=self.workers)
+
+        # \u4E24\u4E2A\u7EBF\u7A0B\u6C60\uFF1A\u4E0B\u8F7D\uFF08\u81EA\u5B9A\u4E49 workers\uFF09 + \u6821\u9A8C\uFF08\u56FA\u5B9A 4 \u7EBF\u7A0B\uFF09
+        download_executor = ThreadPoolExecutor(max_workers=self.workers)
+        verify_executor = ThreadPoolExecutor(max_workers=4)
+        print(f"\u{1F527} \u4E0B\u8F7D\u7EBF\u7A0B: {self.workers}, \u6821\u9A8C\u7EBF\u7A0B: 4\\n")
+
         try:
-            futures = [executor.submit(download_task, f) for f in files]
-            for future in as_completed(futures):
+            # Phase 1: \u63D0\u4EA4\u6240\u6709\u4E0B\u8F7D\uFF08\u8DF3\u8FC7\u672B\u5C3E\u6821\u9A8C\uFF09
+            d_futures = {download_executor.submit(self.download_file, f, progress, verify=False): f
+                         for f in files}
+
+            # Phase 2: \u4E0B\u8F7D\u5B8C\u6210\u7ACB\u5373\u6392\u961F\u6821\u9A8C
+            verify_queue = []
+            for df in as_completed(d_futures):
                 if _shutdown_requested:
                     break
+                f = d_futures[df]
                 try:
-                    future.result()
-                except Exception as e:
-                    if not _shutdown_requested:
-                        print(f"\\n\u274C \u4EFB\u52A1\u5F02\u5E38: {e}")
+                    if df.result():
+                        verify_queue.append(f)
+                    else:
+                        with lock:
+                            results["failed"] += 1
+                            results["failed_files"].append(f.path)
+                except Exception:
+                    with lock:
+                        results["failed"] += 1
+                        results["failed_files"].append(f.path)
+
+            # Phase 3: \u6821\u9A8C\u5DF2\u4E0B\u8F7D\u6587\u4EF6\uFF084 \u7EBF\u7A0B\u5E76\u884C\uFF0C\u4E0E\u5269\u4F59\u4E0B\u8F7D\u91CD\u53E0\uFF09
+            if verify_queue and not _shutdown_requested:
+                v_futures = {verify_executor.submit(self._verify_single_file, f): f
+                             for f in verify_queue}
+                for vf in as_completed(v_futures):
+                    if _shutdown_requested:
+                        break
+                    f = v_futures[vf]
+                    try:
+                        if vf.result():
+                            with lock:
+                                results["success"] += 1
+                        else:
+                            with lock:
+                                results["failed"] += 1
+                                results["failed_files"].append(f.path)
+                            output_path = self.output_dir / f.path
+                            if output_path.exists():
+                                output_path.unlink()
+                    except Exception:
+                        with lock:
+                            results["failed"] += 1
+                            results["failed_files"].append(f.path)
+
         except KeyboardInterrupt:
+            self.logger.warning("\u7528\u6237\u4E2D\u65AD\u4E0B\u8F7D (Ctrl+C)")
             print("\\n\\n\u23F8\uFE0F  \u6B63\u5728\u505C\u6B62... (\u5DF2\u4E0B\u8F7D\u7684\u6587\u4EF6\u4E0B\u6B21\u53EF\u7EED\u4F20)")
         finally:
-            executor.shutdown(wait=False)
+            download_executor.shutdown(wait=False)
+            verify_executor.shutdown(wait=False)
             progress.close()
 
         # \u6253\u5370\u7ED3\u679C
+        self.logger.info(f"\u4E0B\u8F7D\u7ED3\u675F: \u6210\u529F={results['success']}, \u5931\u8D25={results['failed']}, \u603B\u8BA1={len(files)}")
         print("\\n" + "=" * 60)
         print(f"\u2705 \u4E0B\u8F7D\u5B8C\u6210: {results['success']}/{len(files)} \u4E2A\u6587\u4EF6\u6210\u529F")
         if results["failed"] > 0:
@@ -951,7 +1069,7 @@ class HFDownloader:
             for f in results["failed_files"]:
                 print(f"   - {f}")
         print("=" * 60)
-        
+
         return results
     
     @staticmethod
@@ -974,8 +1092,72 @@ def _on_interrupt(signum, frame):
     print("\\n\u23F8\uFE0F  \u6B63\u5728\u505C\u6B62... (\u518D\u6B21 Ctrl+C \u5F3A\u5236\u9000\u51FA)")
 
 
+def check_update(proxy_domain: str):
+    """\u68C0\u67E5\u811A\u672C\u7248\u672C\uFF0C\u5982\u6709\u65B0\u7248\u672C\u5219\u81EA\u52A8\u66F4\u65B0"""
+    try:
+        resp = requests.get(f"https://{proxy_domain}/version", timeout=10)
+        remote_version = resp.text.strip()
+
+        from packaging.version import Version
+    except ImportError:
+        # \u7B80\u5355\u5B57\u7B26\u4E32\u6BD4\u8F83
+        if remote_version != __version__:
+            _do_update(proxy_domain, remote_version)
+        return
+    except Exception:
+        return  # \u68C0\u67E5\u5931\u8D25\uFF0C\u9759\u9ED8\u8DF3\u8FC7
+
+    try:
+        if Version(remote_version) > Version(__version__):
+            _do_update(proxy_domain, remote_version)
+    except Exception:
+        return
+
+
+def _do_update(proxy_domain: str, new_version: str):
+    """\u4E0B\u8F7D\u65B0\u7248\u672C\u811A\u672C\u5E76\u66FF\u6362\u5F53\u524D\u6587\u4EF6"""
+    print(f"\\n\u{1F504} \u53D1\u73B0\u65B0\u7248\u672C v{new_version} (\u5F53\u524D v{__version__})\uFF0C\u6B63\u5728\u81EA\u52A8\u66F4\u65B0...")
+    try:
+        resp = requests.get(f"https://{proxy_domain}/hf_downloader.py", timeout=60)
+        resp.raise_for_status()
+
+        current_file = Path(__file__).resolve()
+        # \u5907\u4EFD\u65E7\u6587\u4EF6
+        backup = current_file.with_suffix(".py.bak")
+        shutil.copy2(current_file, backup)
+
+        # \u5199\u5165\u65B0\u7248\u672C
+        with open(current_file, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+
+        print(f"\u2705 \u66F4\u65B0\u5B8C\u6210 v{new_version}\uFF0C\u8BF7\u91CD\u65B0\u8FD0\u884C\u547D\u4EE4")
+        # \u8FD8\u539F\u5907\u4EFD\uFF08\u65B0\u7248\u5199\u5165\u6210\u529F\u540E\u6E05\u7406\uFF09
+        if backup.exists():
+            backup.unlink()
+        sys.exit(0)
+    except Exception as e:
+        print(f"\u26A0\uFE0F \u81EA\u52A8\u66F4\u65B0\u5931\u8D25: {e}")
+        # \u6062\u590D\u5907\u4EFD
+        backup = Path(__file__).resolve().with_suffix(".py.bak")
+        if backup.exists():
+            shutil.copy2(backup, Path(__file__).resolve())
+            backup.unlink()
+
+
 def main():
     signal.signal(signal.SIGINT, _on_interrupt)
+
+    # \u63D0\u524D\u89E3\u6790 repo_id \u548C proxy \u7528\u4E8E\u65E5\u5FD7\u521D\u59CB\u5316\u548C\u7248\u672C\u68C0\u67E5
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("repo_id", nargs="?", default="unknown")
+    pre_parser.add_argument("--proxy", "-p", default=PROXY_DOMAIN)
+    pre_args, _ = pre_parser.parse_known_args()
+
+    # \u68C0\u67E5\u66F4\u65B0
+    check_update(pre_args.proxy)
+    logger = setup_logging(pre_args.repo_id)
+    logger.info("=" * 60)
+    logger.info(f"HF Downloader \u542F\u52A8")
 
     parser = argparse.ArgumentParser(
         description="\u901A\u8FC7\u4EE3\u7406\u4E0B\u8F7D Hugging Face \u4ED3\u5E93\u6587\u4EF6",
@@ -1033,6 +1215,8 @@ def main():
         print("\u{1F310} \u5DF2\u542F\u7528\u5F3A\u5236 IPv4 \u89E3\u6790")
         configure_dns(force_ipv4=True)
     
+    logger.info(f"\u914D\u7F6E: repo={args.repo_id}, type={args.type}, revision={args.revision}, proxy={args.proxy}, workers={args.workers}")
+
     print(f"""
 \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
 \u2551          \u{1F917} Hugging Face \u4EE3\u7406\u4E0B\u8F7D\u5668                          \u2551
@@ -1043,7 +1227,7 @@ def main():
 \u2551  \u4EE3\u7406: {args.proxy:<53} \u2551
 \u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D
 """)
-    
+
     downloader = HFDownloader(
         repo_id=args.repo_id,
         repo_type=args.type,
@@ -1052,7 +1236,8 @@ def main():
         proxy_domain=args.proxy,
         workers=args.workers,
         token=args.token,
-        proxy_token=args.proxy_token
+        proxy_token=args.proxy_token,
+        logger=logger
     )
     
     if args.list_only:
@@ -1085,6 +1270,10 @@ def main():
                 print(f"\\n\u274C \u5BFC\u5165 cache \u5931\u8D25: {e}")
                 print(f"   \u6587\u4EF6\u4ECD\u4FDD\u7559\u5728: {downloader.output_dir}")
 
+    logger.info("HF Downloader \u7ED3\u675F")
+    for handler in logger.handlers:
+        handler.close()
+
 
 if __name__ == "__main__":
     main()
@@ -1107,6 +1296,13 @@ function handleDownloaderScript(hostname) {
       "Content-Disposition": 'attachment; filename="hf_downloader.py"',
       "Cache-Control": "no-cache"
     }
+  });
+}
+var SCRIPT_VERSION = "1.8.0";
+function handleVersion() {
+  return new Response(SCRIPT_VERSION, {
+    status: 200,
+    headers: { "Content-Type": "text/plain; charset=utf-8" }
   });
 }
 async function handleProxy(request, url) {
@@ -1206,6 +1402,10 @@ var index_default = {
       // 下载器脚本
       case pathname === "/hf_downloader.py":
         response = handleDownloaderScript(hostname);
+        break;
+      // 版本查询
+      case pathname === "/version":
+        response = handleVersion();
         break;
       // 代理请求
       default:

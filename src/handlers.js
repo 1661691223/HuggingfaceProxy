@@ -36,6 +36,19 @@ export function handleDownloaderScript(hostname) {
     });
 }
 
+const SCRIPT_VERSION = "1.8.0";
+
+/**
+ * 处理版本查询
+ * @returns {Response}
+ */
+export function handleVersion() {
+    return new Response(SCRIPT_VERSION, {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+    });
+}
+
 /**
  * 处理代理请求
  * @param {Request} request - 原始请求

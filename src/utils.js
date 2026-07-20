@@ -118,7 +118,7 @@ export function isBrowserRequest(request) {
  * @returns {boolean}
  */
 export function isAllowedBrowserPath(pathname) {
-    const allowedPaths = ['/', '', '/hf_downloader.py'];
+    const allowedPaths = ['/', '', '/hf_downloader.py', '/version'];
     return allowedPaths.includes(pathname);
 }
 
