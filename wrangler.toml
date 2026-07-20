@@ -2,8 +2,5 @@ name = "hfproxy"
 main = "_worker.js"
 compatibility_date = "2025-01-01"
 
-[placement]
-mode = "smart"
-
 [vars]
 RESTRICT_BROWSER_ACCESS = "true"
