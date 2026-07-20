@@ -365,13 +365,13 @@ class HFDownloader:
 
         self.logger.info(f"文件列表共 {page} 页, {len(files)} 个文件")
     
-    def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None) -> bool:
-        """下载单个文件，支持断点续传和完整性校验"""
+    def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None, verify: bool = True) -> bool:
+        """下载单个文件，支持断点续传。verify=False 跳过末尾校验（供流水线使用）"""
         global _shutdown_requested
         output_path = self.output_dir / file_info.path
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 文件已存在且完整 → 跳过
+        # 文件已存在且完整 → 跳过（始终校验，已存在文件校验很快）
         if output_path.exists() and output_path.stat().st_size == file_info.size:
             if self._verify_integrity(output_path, file_info):
                 self.logger.info(f"跳过(已存在): {file_info.path}")
@@ -437,15 +437,16 @@ class HFDownloader:
                             if progress_bar:
                                 progress_bar.update(len(chunk))
 
-                # 完整性校验
-                file_size_mb = file_info.size / (1024 * 1024)
-                tqdm.write(f"  🔍 校验中: {file_info.path} ({file_size_mb:.1f} MB)...")
-                if not self._verify_integrity(output_path, file_info):
-                    output_path.unlink()
-                    resume_pos = 0
-                    tqdm.write(f"  ❌ 校验失败: {file_info.path}")
-                    raise ValueError(f"校验失败: {file_info.path}")
-                tqdm.write(f"  ✅ 校验通过: {file_info.path}")
+                # 完整性校验（仅 verify=True 时）
+                if verify:
+                    file_size_mb = file_info.size / (1024 * 1024)
+                    tqdm.write(f"  🔍 校验中: {file_info.path} ({file_size_mb:.1f} MB)...")
+                    if not self._verify_integrity(output_path, file_info):
+                        output_path.unlink()
+                        resume_pos = 0
+                        tqdm.write(f"  ❌ 校验失败: {file_info.path}")
+                        raise ValueError(f"校验失败: {file_info.path}")
+                    tqdm.write(f"  ✅ 校验通过: {file_info.path}")
 
                 return True
 
@@ -479,6 +480,21 @@ class HFDownloader:
             tqdm.write(f"   期望: {expected[:16]}...")
             tqdm.write(f"   实际: {actual[:16]}...")
             return False
+        return True
+
+    def _verify_single_file(self, file_info: FileInfo) -> bool:
+        """校验单个已下载文件（供校验线程池调用）"""
+        output_path = self.output_dir / file_info.path
+        if not output_path.exists() or output_path.stat().st_size != file_info.size:
+            return False
+        file_size_mb = file_info.size / (1024 * 1024)
+        tqdm.write(f"  🔍 校验中: {file_info.path} ({file_size_mb:.1f} MB)...")
+        if not self._verify_integrity(output_path, file_info):
+            self.logger.warning(f"校验失败: {file_info.path}")
+            tqdm.write(f"  ❌ 校验失败: {file_info.path}")
+            return False
+        self.logger.info(f"校验通过: {file_info.path}")
+        tqdm.write(f"  ✅ 校验通过: {file_info.path}")
         return True
 
     def verify_only(self, files: Optional[List[FileInfo]] = None):
@@ -586,34 +602,65 @@ class HFDownloader:
         
         results = {"success": 0, "failed": 0, "failed_files": []}
         lock = threading.Lock()
-        
-        def download_task(file_info: FileInfo) -> bool:
-            success = self.download_file(file_info, progress)
-            with lock:
-                if success:
-                    results["success"] += 1
-                else:
-                    results["failed"] += 1
-                    results["failed_files"].append(file_info.path)
-            return success
-        
-        # 使用线程池并行下载
-        executor = ThreadPoolExecutor(max_workers=self.workers)
+
+        # 两个线程池：下载（自定义 workers） + 校验（固定 4 线程）
+        download_executor = ThreadPoolExecutor(max_workers=self.workers)
+        verify_executor = ThreadPoolExecutor(max_workers=4)
+        print(f"🔧 下载线程: {self.workers}, 校验线程: 4\n")
+
         try:
-            futures = [executor.submit(download_task, f) for f in files]
-            for future in as_completed(futures):
+            # Phase 1: 提交所有下载（跳过末尾校验）
+            d_futures = {download_executor.submit(self.download_file, f, progress, verify=False): f
+                         for f in files}
+
+            # Phase 2: 下载完成立即排队校验
+            verify_queue = []
+            for df in as_completed(d_futures):
                 if _shutdown_requested:
                     break
+                f = d_futures[df]
                 try:
-                    future.result()
-                except Exception as e:
-                    if not _shutdown_requested:
-                        print(f"\n❌ 任务异常: {e}")
+                    if df.result():
+                        verify_queue.append(f)
+                    else:
+                        with lock:
+                            results["failed"] += 1
+                            results["failed_files"].append(f.path)
+                except Exception:
+                    with lock:
+                        results["failed"] += 1
+                        results["failed_files"].append(f.path)
+
+            # Phase 3: 校验已下载文件（4 线程并行，与剩余下载重叠）
+            if verify_queue and not _shutdown_requested:
+                v_futures = {verify_executor.submit(self._verify_single_file, f): f
+                             for f in verify_queue}
+                for vf in as_completed(v_futures):
+                    if _shutdown_requested:
+                        break
+                    f = v_futures[vf]
+                    try:
+                        if vf.result():
+                            with lock:
+                                results["success"] += 1
+                        else:
+                            with lock:
+                                results["failed"] += 1
+                                results["failed_files"].append(f.path)
+                            output_path = self.output_dir / f.path
+                            if output_path.exists():
+                                output_path.unlink()
+                    except Exception:
+                        with lock:
+                            results["failed"] += 1
+                            results["failed_files"].append(f.path)
+
         except KeyboardInterrupt:
             self.logger.warning("用户中断下载 (Ctrl+C)")
             print("\n\n⏸️  正在停止... (已下载的文件下次可续传)")
         finally:
-            executor.shutdown(wait=False)
+            download_executor.shutdown(wait=False)
+            verify_executor.shutdown(wait=False)
             progress.close()
 
         # 打印结果
@@ -625,7 +672,7 @@ class HFDownloader:
             for f in results["failed_files"]:
                 print(f"   - {f}")
         print("=" * 60)
-        
+
         return results
     
     @staticmethod
