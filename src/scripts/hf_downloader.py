@@ -45,7 +45,7 @@ except ImportError:
 PROXY_DOMAIN = "{{PROXY_DOMAIN}}"  # 你的代理域名
 MAX_RETRIES = 3                    # 最大重试次数
 CHUNK_SIZE = 64 * 1024 * 1024      # 64MB 每块
-DEFAULT_WORKERS = 4                # 默认并行下载数
+DEFAULT_WORKERS = 8                # 默认并行下载数
 
 
 def check_cernet() -> bool:
