@@ -25,7 +25,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, quote
+from urllib.parse import urljoin, quote, urlparse
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -351,10 +351,12 @@ class HFDownloader:
                 link_header = resp.headers.get("Link", "")
                 url = None
                 if link_header:
-                    # RFC 5988: <url>; rel="next"
                     for part in link_header.split(","):
                         if 'rel="next"' in part:
-                            url = part.split(">")[0].lstrip("<")
+                            raw_url = part.split(">")[0].lstrip("<")
+                            # Link 头指向 huggingface.co，需要改写为走代理
+                            parsed = urlparse(raw_url)
+                            url = self._url(parsed.path + ("?" + parsed.query if parsed.query else ""))
                             break
 
             except requests.RequestException as e:
