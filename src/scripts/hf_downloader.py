@@ -491,19 +491,22 @@ class HFDownloader:
             return False
         return True
 
-    def _verify_single_file(self, file_info: FileInfo) -> bool:
+    def _verify_single_file(self, file_info: FileInfo, verify_bar: Optional[tqdm] = None) -> bool:
         """校验单个已下载文件（供校验线程池调用）"""
         output_path = self.output_dir / file_info.path
         if not output_path.exists() or output_path.stat().st_size != file_info.size:
+            if verify_bar:
+                verify_bar.update(1)
             return False
-        file_size_mb = file_info.size / (1024 * 1024)
-        tqdm.write(f"  🔍 校验中: {file_info.path} ({file_size_mb:.1f} MB)...")
         if not self._verify_integrity(output_path, file_info):
             self.logger.warning(f"校验失败: {file_info.path}")
             tqdm.write(f"  ❌ 校验失败: {file_info.path}")
+            if verify_bar:
+                verify_bar.update(1)
             return False
         self.logger.info(f"校验通过: {file_info.path}")
-        tqdm.write(f"  ✅ 校验通过: {file_info.path}")
+        if verify_bar:
+            verify_bar.update(1)
         return True
 
     def verify_only(self, files: Optional[List[FileInfo]] = None):
@@ -642,7 +645,12 @@ class HFDownloader:
 
             # Phase 3: 校验已下载文件（4 线程并行，与剩余下载重叠）
             if verify_queue and not _shutdown_requested:
-                v_futures = {verify_executor.submit(self._verify_single_file, f): f
+                verify_bar = tqdm(
+                    total=len(verify_queue),
+                    unit="file",
+                    desc="校验进度"
+                )
+                v_futures = {verify_executor.submit(self._verify_single_file, f, verify_bar): f
                              for f in verify_queue}
                 for vf in as_completed(v_futures):
                     if _shutdown_requested:
@@ -663,6 +671,7 @@ class HFDownloader:
                         with lock:
                             results["failed"] += 1
                             results["failed_files"].append(f.path)
+                verify_bar.close()
 
         except KeyboardInterrupt:
             self.logger.warning("用户中断下载 (Ctrl+C)")
