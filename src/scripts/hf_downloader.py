@@ -305,7 +305,7 @@ class HFDownloader:
 
         total_size = sum(f.size for f in all_files)
         self.logger.info(f"文件列表获取完成: {len(all_files)} 个文件, 总大小 {total_size:,} bytes ({total_size / (1024**3):.2f} GB)")
-        print(f"✅ 共发现 {len(all_files)} 个文件")
+        print(f"✅ 共发现 {len(all_files)} 个文件 ({self._format_size(total_size)})")
         return all_files
     
     def _fetch_tree_recursive(self, path: str, files: List[FileInfo]) -> None:
@@ -318,6 +318,7 @@ class HFDownloader:
             params = {"recursive": "true"}
 
         page = 0
+        total_size = 0
         while url:
             page += 1
             try:
@@ -331,6 +332,7 @@ class HFDownloader:
                     if item.get("type") == "file":
                         fpath = item["path"]
                         size = item.get("size", 0)
+                        total_size += size
                         oid = item.get("oid", "")
                         lfs = item.get("lfs") is not None
 
@@ -347,6 +349,10 @@ class HFDownloader:
                             download_url=download_url
                         ))
 
+                # 实时打印分页进度
+                size_str = self._format_size(total_size)
+                print(f"\r  Listed {len(files)} files ({size_str})...", end="", flush=True)
+
                 # 解析 Link 头获取下一页 URL
                 link_header = resp.headers.get("Link", "")
                 url = None
@@ -360,9 +366,10 @@ class HFDownloader:
                             break
 
             except requests.RequestException as e:
-                print(f"⚠️ 获取文件列表失败 (第 {page} 页): {e}")
+                print(f"\n⚠️ 获取文件列表失败 (第 {page} 页): {e}")
                 raise
 
+        print()  # 换行
         self.logger.info(f"文件列表共 {page} 页, {len(files)} 个文件")
     
     def download_file(self, file_info: FileInfo, progress_bar: Optional[tqdm] = None, verify: bool = True) -> bool:
