@@ -36,7 +36,7 @@ export function handleDownloaderScript(hostname) {
     });
 }
 
-const SCRIPT_VERSION = "1.8.0";
+const SCRIPT_VERSION = "1.8.1";
 
 /**
  * 处理版本查询

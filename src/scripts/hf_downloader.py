@@ -30,7 +30,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 
 # 全局关闭标志，用于优雅退出
 _shutdown_requested = False

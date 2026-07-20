@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-07-20T09:43:09.086Z
+ * 构建时间: 2026-07-20T09:46:13.185Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -418,7 +418,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from tqdm import tqdm
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 
 # \u5168\u5C40\u5173\u95ED\u6807\u5FD7\uFF0C\u7528\u4E8E\u4F18\u96C5\u9000\u51FA
 _shutdown_requested = False
@@ -1298,7 +1298,7 @@ function handleDownloaderScript(hostname) {
     }
   });
 }
-var SCRIPT_VERSION = "1.8.0";
+var SCRIPT_VERSION = "1.8.1";
 function handleVersion() {
   return new Response(SCRIPT_VERSION, {
     status: 200,
