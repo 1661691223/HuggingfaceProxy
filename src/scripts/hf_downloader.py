@@ -616,8 +616,8 @@ class HFDownloader:
         lock = threading.Lock()
 
         # 两个线程池：下载（自定义 workers） + 校验（固定 4 线程）
-        download_executor = ThreadPoolExecutor(max_workers=self.workers)
-        verify_executor = ThreadPoolExecutor(max_workers=4)
+        download_executor = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="dl")
+        verify_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="verify")
         print(f"🔧 下载线程: {self.workers}, 校验线程: 4\n")
 
         try:
